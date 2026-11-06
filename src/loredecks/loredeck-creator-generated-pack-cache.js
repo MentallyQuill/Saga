@@ -39,7 +39,9 @@ export function hasLoredeckCreatorGeneratedPackProgressPayload(pack = {}, deps =
 export function createLoredeckCreatorGeneratedPackCacheController(deps = {}) {
     const payloadCache = deps.payloadCache instanceof Map ? deps.payloadCache : new Map();
     const hydrationRequests = deps.hydrationRequests instanceof Map ? deps.hydrationRequests : new Map();
-    const cloneJson = value => callOrFallback(deps.cloneJson, cloneJsonFallback(value), value);
+    const cloneJson = value => typeof deps.cloneJson === 'function'
+        ? deps.cloneJson(value)
+        : cloneJsonFallback(value);
     const getLoredeckDefinition = packId => callOrFallback(deps.getLoredeckDefinition, null, packId);
     const hydrateCachedPayload = pack => callOrFallback(deps.hydrateCachedPayload, pack, pack);
     const hydratePayload = pack => callOrFallback(deps.hydratePayload, Promise.resolve(null), pack);

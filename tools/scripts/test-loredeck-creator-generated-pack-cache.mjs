@@ -7,6 +7,25 @@ import {
 
 const cloneJson = value => JSON.parse(JSON.stringify(value));
 
+{
+  let injectedCalls = 0;
+  let fallbackSerializations = 0;
+  const pack = {
+    packId: 'generated-clone',
+    payloadFile: 'generated-clone.v1.json',
+    entryOverrides: { nami: { title: 'Nami' } },
+    toJSON() { fallbackSerializations++; return { packId: this.packId }; },
+  };
+  const controller = createLoredeckCreatorGeneratedPackCacheController({
+    getLoredeckDefinition: () => ({ packId: pack.packId }),
+    hydrateCachedPayload: () => pack,
+    cloneJson: value => { injectedCalls++; return { ...value }; },
+  });
+  controller.getGeneratedPackDefinition(pack.packId);
+  assert.equal(injectedCalls, 1);
+  assert.equal(fallbackSerializations, 0, 'An injected clone must not also evaluate the fallback clone.');
+}
+
 assert.equal(
   getLoredeckCreatorJobGeneratedPackId({ generatedPackId: 'generated-a', brief: { packId: 'brief-a' } }),
   'generated-a',

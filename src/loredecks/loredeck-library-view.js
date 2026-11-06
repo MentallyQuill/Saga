@@ -3,6 +3,10 @@
  * Pure view-model helpers for Loredeck Library list ordering.
  */
 
+const libraryTitleCollator = new Intl.Collator(undefined, {
+  numeric: true, sensitivity: 'base',
+});
+
 function getPackId(pack = {}) {
   return String(pack.packId || pack.id || '').trim();
 }
@@ -12,7 +16,7 @@ function getPackTitle(pack = {}) {
 }
 
 export function compareLoredeckLibraryTitles(a = '', b = '') {
-  return String(a || '').localeCompare(String(b || ''), undefined, { numeric: true, sensitivity: 'base' });
+  return libraryTitleCollator.compare(String(a || ''), String(b || ''));
 }
 
 export function compareLoredeckLibraryPackTitles(a = {}, b = {}) {

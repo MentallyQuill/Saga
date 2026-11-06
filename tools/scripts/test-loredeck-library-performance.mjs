@@ -9,7 +9,12 @@ import { configureLoredeckLibraryStore, getLoredeckLibraryRegistry } from '../..
 import { getLoredeckLibrary, getLoredeckStack, getLoredeckTypeLabel } from '../../src/runtime/active-stack-panel.js';
 import { buildLoredeckHealthPackSummary } from '../../src/loredecks/loredeck-health-panel.js';
 import { resolveLoredeckStackItems } from '../../src/loredecks/loredeck-library-index.js';
-import { sortLoredeckLibraryPacks } from '../../src/loredecks/loredeck-library-view.js';
+import {
+  compareLoredeckLibraryTitles,
+  sortLoredeckLibraryFolderPacks,
+  sortLoredeckLibraryFolderTreeByTitle,
+  sortLoredeckLibraryPacks,
+} from '../../src/loredecks/loredeck-library-view.js';
 
 // Exercise private render helpers without adding test-only exports to the UI API.
 const panelPath = fileURLToPath(new URL('../../src/loredecks/loredeck-library-panel.js', import.meta.url));
@@ -102,6 +107,17 @@ const manualRegistry = {
   },
 };
 const manualPacks = ['alpha', 'bravo', 'charlie', 'delta'].map(packId => ({ packId, title: packId }));
+for (const [a, b, expected] of [
+  ['', '', 0], ['', 'Alpha', -1], ['Deck 2', 'Deck 10', -1], ['alpha', 'ALPHA', 0],
+  ['cafe', 'café', 0], ['Same', 'same', 0],
+]) assert.equal(Math.sign(compareLoredeckLibraryTitles(a, b)), Math.sign(expected), `Comparator parity for ${JSON.stringify([a, b])}`);
+const tied = sortLoredeckLibraryPacks([{ packId: 'b', title: 'Same' }, { packId: 'a', title: 'same' }]);
+assert.deepEqual(tied.map(pack => pack.packId), ['a', 'b'], 'Equal-title ordering uses the existing ID tie breaker.');
 assert.deepEqual(sortLoredeckLibraryPacks(manualPacks, { sortMode: 'manual', registry: manualRegistry }).map(pack => pack.packId),
   ['delta', 'charlie', 'bravo', 'alpha']);
+assert.deepEqual(sortLoredeckLibraryFolderPacks([
+  { packId: 'custom', title: 'Alpha', type: 'custom' }, { packId: 'base-core', title: 'Core', type: 'bundled' },
+]).map(pack => pack.packId), ['base-core', 'custom'], 'Core packs remain first in folders.');
+assert.deepEqual(sortLoredeckLibraryFolderTreeByTitle([{ id: 'b', title: 'Folder 10' }, { id: 'a', title: 'Folder 2' }]).map(folder => folder.id),
+  ['a', 'b'], 'Folder titles keep numeric title ordering.');
 assert(placementReads <= 2, 'Manual sorting must index placements once instead of scanning the registry for every comparison.');
