@@ -60,3 +60,6 @@ Backups/
 User Avatars/
 settings.json
 secrets.json
+
+# Pinned development-only tooling.
+node_modules/
