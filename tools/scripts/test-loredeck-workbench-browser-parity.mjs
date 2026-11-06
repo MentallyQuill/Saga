@@ -1,17 +1,30 @@
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { test, after } from 'node:test';
+import { writeFile } from 'node:fs/promises';
 import { startSagaPerformanceHarness } from './lib/saga-performance-harness.mjs';
+import { registerWorkbenchEditingParity } from './lib/saga-workbench-editing-parity.mjs';
+import { parityProvenance } from './lib/saga-parity-provenance.mjs';
 
-const setup = async () => {
-    const harness = await startSagaPerformanceHarness();
+const provenance = await parityProvenance(['tools/scripts/test-loredeck-workbench-browser-parity.mjs', 'tools/scripts/lib/saga-workbench-editing-parity.mjs']);
+const browsers = new Map();
+const startHarness = async options => {
+    const harness = await startSagaPerformanceHarness({ browserName: process.env.SAGA_PARITY_BROWSER || 'chromium', ...options });
+    browsers.set(harness.executablePath, { name: harness.browserName, version: harness.browserVersion, executablePath: harness.executablePath });
+    return harness;
+};
+after(async () => {
+    if (process.env.SAGA_PARITY_REPORT) await writeFile(process.env.SAGA_PARITY_REPORT, JSON.stringify({ provenance, browsers: [...browsers.values()] }, null, 2));
+});
+const setup = async (options = {}) => {
+    const harness = await startHarness();
     try {
-        await harness.page.evaluate(async () => {
+        await harness.page.evaluate(async options => {
             const { installSagaPerformanceFixture } = await import('/tests/browser/performance-fixtures.mjs');
-            window.fixture = await installSagaPerformanceFixture({ entryCount: 12 });
+            window.fixture = await installSagaPerformanceFixture({ entryCount: 12, ...options });
             window.panel = await import('/src/loredecks/loredeck-workbench-panel.js');
             fixture.openWorkbench();
-        });
-        await harness.page.waitForSelector('.saga-loredeck-workbench-editor-form');
+        }, options);
+        await harness.page.waitForSelector(options.type === 'bundled' ? '.saga-lore-workbench-detail' : '.saga-loredeck-workbench-editor-form');
         return harness;
     } catch (error) { await harness.stop(); throw error; }
 };
@@ -90,7 +103,7 @@ for (const target of ['performance-custom-b', 'performance-custom-a']) test(`con
     } finally { await h.stop(); }
 });
 
-const clickText = (page, text) => page.locator('button').filter({ hasText: new RegExp(`^${text}$`) }).click();
+const clickText = (page, text) => page.locator('#saga-loredeck-workbench button').filter({ hasText: new RegExp(`^${text}$`) }).click();
 
 test('real duplicate and draft-create reloads retain their intended new selected entry', async () => {
     const h = await setup();
@@ -283,11 +296,20 @@ test('real forced reload shows original loading copy, retains hidden editor buff
             const scroll = area.scrollTop;
             document.querySelector('.saga-loredeck-workbench-entry-row').dispatchEvent(new Event('mouseenter'));
             const shown = document.querySelector('.saga-floating-tooltip')?.style.display === 'block';
-            [...document.querySelectorAll('button')].find(node => node.textContent === 'Reload Lorecards').click();
-            return { scroll, shown };
+            const reload = [...document.querySelectorAll('#saga-loredeck-workbench button')].find(node => node.textContent === 'Reload Lorecards');
+            const reloadPresentation = { label: reload.textContent, disabled: reload.disabled, width: reload.getBoundingClientRect().width,
+                columns: getComputedStyle(document.querySelector('.saga-lore-workbench-header')).gridTemplateColumns };
+            reload.click();
+            return { scroll, shown, reloadPresentation };
         });
         assert.equal(before.shown, true);
         await source.wait();
+        const loadingReload = await h.page.evaluate(() => {
+            const reload = document.querySelector('.saga-loredeck-workbench-header-actions button');
+            return { label: reload.textContent, disabled: reload.disabled, width: reload.getBoundingClientRect().width,
+                columns: getComputedStyle(document.querySelector('.saga-lore-workbench-header')).gridTemplateColumns };
+        });
+        assert.deepEqual(loadingReload, before.reloadPresentation, 'Original loading presentation keeps enabled Reload Lorecards and the unchanged header geometry');
         assert.equal(await h.page.locator('.saga-lore-workbench-view > .saga-lore-empty').textContent(), 'Loading Lorecards...');
         assert.equal(await h.page.locator('.saga-lore-workbench-main').isVisible(), false);
         assert.equal(await h.page.locator('.saga-floating-tooltip').isVisible(), false);
@@ -496,8 +518,8 @@ test('per-open resets preserve query/relevance/category and draft buffers surviv
     } finally { await h.stop(); }
 });
 
-for (const destination of ['closed', 'registries']) test(`late lazy import respects ${destination} ownership and mounts latest snapshot once on return`, async () => {
-    const h = await startSagaPerformanceHarness();
+for (const destination of ['closed', 'registries', 'experience']) test(`late lazy import respects ${destination} ownership and mounts latest snapshot once on return`, async () => {
+    const h = await startHarness();
     let release;
     try {
         const gate = new Promise(resolve => { release = resolve; });
@@ -511,17 +533,24 @@ for (const destination of ['closed', 'registries']) test(`late lazy import respe
             fixture.openWorkbench();
         });
         await sawRequest;
-        await h.page.evaluate(destination => {
+        await h.page.evaluate(async destination => {
             fixture.registry.packs['performance-custom-a'].entryOverrides['fixture.entry.0001'].title = 'Latest during import';
             [...document.querySelectorAll('button')].find(node => node.textContent === 'Reload Lorecards').click();
             panel.refreshLoredeckWorkbench(); panel.refreshLoredeckWorkbench();
-            if (destination === 'closed') { panel.closeLoredeckWorkbench(); panel.refreshLoredeckWorkbench(); }
+            if (destination === 'experience') {
+                // Exercise the real runtime experience control and its public
+                // fullscreen cleanup route while the boundary import is gated.
+                document.querySelector('.saga-runtime-rail-tab[data-tab-id="settings"]').click();
+                document.querySelector('.saga-experience-switch-label-basic').click();
+                const runtime = await import('/src/runtime/lore-panel.js'); runtime.hideLorePanel();
+            }
+            else if (destination === 'closed') { panel.closeLoredeckWorkbench(); panel.refreshLoredeckWorkbench(); }
             else document.querySelectorAll('.saga-lore-workbench-mode-tab')[1].click();
         }, destination);
         release();
         await h.page.waitForTimeout(60);
         assert.equal(await h.page.locator('.saga-loredeck-workbench-editor-form').count(), 0);
-        if (destination === 'closed') {
+        if (destination !== 'registries') {
             assert.equal(await h.page.locator('#saga-loredeck-workbench').count(), 0);
             await h.page.evaluate(() => fixture.openWorkbench());
         } else {
@@ -539,7 +568,7 @@ for (const destination of ['closed', 'registries']) test(`late lazy import respe
 });
 
 test('failed lazy import reports once, keeps Close usable and never replays a business action', async () => {
-    const h = await startSagaPerformanceHarness();
+    const h = await startHarness();
     try {
         const reports = [];
         h.page.on('console', message => { if (message.text().includes('[Saga] Loredeck Workbench view failed:')) reports.push(message.text()); });
@@ -557,3 +586,5 @@ test('failed lazy import reports once, keeps Close usable and never replays a bu
         assert.deepEqual(h.errors, []);
     } finally { await h.stop(); }
 });
+
+registerWorkbenchEditingParity({ setup, gateSource, clickText });

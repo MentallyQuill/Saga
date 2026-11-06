@@ -191,8 +191,16 @@ test('tour coverage enumerates every current child target; every target opens it
   const prepare = requireApi('prepareLoredeckCreatorTourTarget');
   for (const [owner, targets] of Object.entries(targetGroups)) for (const suffix of targets) {
     setup(); let target;
+    // The module remembers disclosures independently of DOM replacement. Reset
+    // through the public lifecycle before proving a genuinely closed owner.
+    creator.openLoredeckCreatorWorkbench();
+    creator.closeLoredeckCreatorWorkbench();
     const details = factoryDisclosure(owner, () => { target = new Element(); target.dataset.sagaTourTarget = `loredecks.creator.${suffix}`; return target; });
-    bodyWith(details); prepare(`loredecks.creator.${suffix}`);
+    bodyWith(details);
+    assert.equal(details.open, false, `${suffix} starts closed`);
+    assert.equal(target, undefined, `${suffix} starts unmounted`);
+    assert.equal(details.children.length, 1, `${suffix} initially contains only its summary`);
+    prepare(`loredecks.creator.${suffix}`);
     assert.equal(details.open, true, suffix); assert.ok(target, `${suffix} must exist before tour lookup`); assertNoDurableWork();
   }
 });
