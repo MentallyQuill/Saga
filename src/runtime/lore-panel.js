@@ -601,6 +601,7 @@ import {
 import {
     appendLoredeckCreatorGenerationStatus,
     compactLoredeckCreatorTitleDraftForRevision,
+    closeLoredeckCreatorWorkbench,
     configureLoredeckCreatorPanel,
     countLoredeckCreatorTitleQualityWarnings,
     createLoredeckCreatorArtifactDisclosure,
@@ -626,6 +627,7 @@ import {
     normalizeLoredeckCreatorTitleId,
     normalizeLoredeckCreatorTitleIdList,
     openLoredeckCreatorWorkbench as openLoredeckCreatorWorkbenchBase,
+    prepareLoredeckCreatorTourTarget,
     queueLoredeckCreatorWorkbenchRefresh,
     refreshLoredeckCreatorGenerationStatusUi,
     refreshLoredeckCreatorTitleSelectionUi,
@@ -1237,8 +1239,11 @@ configureLoredeckCreatorPanel({
     refreshPanelBody,
     refreshHeader,
     isRuntimeMobileShell,
-    getLoredeckCreatorPipelineReadinessView: (pack, cached = null) => {
+    getLoredeckCreatorPipelineReadinessView: (pack, cached = null, renderModel = null) => {
         if (!isGeneratedLoredeckPack(pack)) return null;
+        if (renderModel?.cached === cached && renderModel.generatedPack === pack && renderModel.readiness) {
+            return { readiness: renderModel.readiness, pipeline: renderModel.readiness.pipeline || renderModel.pipeline };
+        }
         const linkedJob = cached || getLoredeckCreatorJobForPack(pack);
         const cachedHealth = getCachedLoredeckCreatorPackHealth(pack);
         const readiness = getGeneratedLoredeckExportReadiness(pack, cachedHealth, linkedJob);
@@ -1434,6 +1439,7 @@ configureRuntimeComposition({
     openContextWorkbenchForPack,
     getContextWorkbenchStack,
     openLoredeckCreatorWorkbench,
+    prepareLoredeckCreatorTourTarget,
     openLoredeckHealthCenter,
     setLoredeckCreatorBriefCacheEntry: (key, value) => loredeckCreatorWorkbenchCacheController.setEntry(key, value),
     getRuntimeGuideSteps,
@@ -1613,9 +1619,9 @@ function closeRuntimeFullscreenSurfaces() {
     closeLoreWorkbench();
     closeLoredeckWorkbench();
     closeContextWorkbench();
+    closeLoredeckCreatorWorkbench();
     document.querySelectorAll([
         '.saga-loredeck-library-overlay',
-        '.saga-loredeck-creator-workbench-overlay',
         '.saga-loredeck-health-center-overlay',
         '.saga-context-proposal-review-overlay',
         '.saga-loredeck-metadata-overlay',
@@ -2285,10 +2291,10 @@ function getLoredeckCreatorPipelineModel(cached = {}) {
     const acceptedPlanningSetCount = eligiblePlanningSets.filter(batch => acceptedPlanningSetIds.has(batch.id)).length;
     const draftChanges = generatedPack ? getLoredeckAssistantDraftChanges(getLoredeckCreatorDraftCacheForPack(generatedPack.packId)) : [];
     const pendingEntryCount = generatedPack ? getLoredeckPendingChanges(generatedPack).filter(change => (change.affectedEntryIds || []).length).length : 0;
-    const creatorCoverage = getLoredeckCreatorCoverageModel(cached, generatedPack);
-    const pipeline = generatedPack ? getLoredeckCreatorPipelineReadiness(generatedPack, cached) : null;
     const cachedHealth = generatedPack ? getCachedLoredeckCreatorPackHealth(generatedPack) : null;
     const readiness = generatedPack ? getGeneratedLoredeckExportReadiness(generatedPack, cachedHealth, cached) : null;
+    const pipeline = readiness?.pipeline || (generatedPack ? getLoredeckCreatorPipelineReadiness(generatedPack, cached) : null);
+    const creatorCoverage = pipeline?.coverage || getLoredeckCreatorCoverageModel(cached, generatedPack);
     const titleSetTotal = titleSets.length || (outline ? 1 : 0);
     const eligiblePlanningTotal = eligiblePlanningSets.length || (approvedTitles.length ? 1 : 0);
     const pendingChanges = generatedPack ? getLoredeckPendingChanges(generatedPack) : [];
@@ -2762,13 +2768,23 @@ function createLoredeckCreatorCard(state = getState(), options = {}) {
     const card = document.createElement('div');
     card.className = 'saga-runtime-card saga-loredeck-creator-card';
 
-    const cached = getLoredeckCreatorBriefCache();
+    const cached = options.cached || getLoredeckCreatorBriefCache();
     const currentFandom = loredeckCreatorFandom || cached.fandom || '';
     const currentScope = loredeckCreatorScope || cached.scope || '';
     const currentGranularity = cached.granularity || loredeckCreatorGranularity || 'focused';
     const currentNotes = loredeckCreatorNotes || cached.notes || '';
-    const pipeline = getLoredeckCreatorPipelineModel(cached);
+    const pipeline = options.pipeline || getLoredeckCreatorPipelineModel(cached);
     const outline = getLoredeckCreatorOutline(cached);
+    // Only immediately mounted children share this render's models. Deferred
+    // children derive one fresh context when they are first opened.
+    let renderContext = { cached, pipeline };
+    const artifactFactory = render => () => {
+        const context = renderContext || (() => {
+            const cached = getLoredeckCreatorBriefCache();
+            return { cached, pipeline: getLoredeckCreatorPipelineModel(cached) };
+        })();
+        return render(context.cached, context.pipeline);
+    };
 
     if (options.showHeader !== false) {
         card.appendChild(createLoredeckCreatorPipelineHeader(cached, pipeline, { showClose: options.embedded === true }));
@@ -2826,7 +2842,7 @@ function createLoredeckCreatorCard(state = getState(), options = {}) {
     if (cached.brief || pipeline.creatorCoverage?.available) {
         card.appendChild(createLoredeckCreatorArtifactDisclosure(
             'Adaptive Coverage',
-            createLoredeckCreatorCoverageCard(cached, pipeline),
+            artifactFactory((cached, pipeline) => createLoredeckCreatorCoverageCard(cached, pipeline)),
             {
                 open: !!pipeline.creatorCoverage?.warnings?.length && options.embedded === true,
                 state: formatLoredeckCreatorCoverageState(pipeline.creatorCoverage || {}),
@@ -2849,52 +2865,50 @@ function createLoredeckCreatorCard(state = getState(), options = {}) {
     if (cached.brief) {
         card.appendChild(createLoredeckCreatorArtifactDisclosure(
             cached.approved ? 'Approved: Scope Brief' : 'Scope Brief Review',
-            createLoredeckCreatorBriefReview(cached.brief, cached),
+            artifactFactory(cached => createLoredeckCreatorBriefReview(cached.brief, cached)),
             { open: cached.approved !== true, state: cached.approved ? 'Approved' : 'Needs review', anchor: 'scope-brief' }
         ));
         if (cached.approved) {
             card.appendChild(createLoredeckCreatorArtifactDisclosure(
                 outline ? (cached.outlineApproved ? 'Approved: Story Outline' : 'Story Outline Review') : 'Story Outline',
-                createLoredeckCreatorOutlineCard(cached.brief, cached),
+                artifactFactory(cached => createLoredeckCreatorOutlineCard(cached.brief, cached)),
                 { open: !!outline && cached.outlineApproved !== true, state: outline ? (cached.outlineApproved ? 'Approved' : 'Needs review') : 'Ready', anchor: 'story-outline' }
             ));
             if (cached.outlineApproved && outline) {
                 const generatedPack = cached.generatedPackId ? getLoredeckCreatorGeneratedPackDefinition(cached.generatedPackId) : null;
                 card.appendChild(createLoredeckCreatorArtifactDisclosure(
                     'Title Pass',
-                    createLoredeckCreatorTitlePassCard(cached.brief, cached),
+                    artifactFactory(cached => createLoredeckCreatorTitlePassCard(cached.brief, cached)),
                     { open: pipeline.currentStep.id === 'titles', state: pipeline.stages.find(stage => stage.id === 'titles')?.detail || 'Ready', anchor: 'title-sets' }
                 ));
                 card.appendChild(createLoredeckCreatorArtifactDisclosure(
                     'Context Plan',
-                    createLoredeckCreatorPlanningCard(cached.brief, cached),
+                    artifactFactory(cached => createLoredeckCreatorPlanningCard(cached.brief, cached)),
                     { open: pipeline.currentStep.id === 'context', state: pipeline.stages.find(stage => stage.id === 'context')?.detail || 'Locked', anchor: 'context-plan' }
                 ));
                 if (generatedPack && pipeline.pendingChanges.length) {
-                    const pendingReviewCard = createLoredeckCreatorPendingReviewCard(cached, pipeline);
-                    if (pendingReviewCard) {
-                        card.appendChild(createLoredeckCreatorArtifactDisclosure(
-                            'Pending Review',
-                            pendingReviewCard,
-                            { open: ['context', 'review'].includes(pipeline.currentStep.id), state: `${pipeline.pendingChanges.length} pending`, anchor: 'review-queue' }
-                        ));
-                    }
+                    card.appendChild(createLoredeckCreatorArtifactDisclosure(
+                        'Pending Review',
+                        artifactFactory((cached, pipeline) => createLoredeckCreatorPendingReviewCard(cached, pipeline)),
+                        { open: ['context', 'review'].includes(pipeline.currentStep.id), state: `${pipeline.pendingChanges.length} pending`, anchor: 'review-queue' }
+                    ));
                 }
                 card.appendChild(createLoredeckCreatorArtifactDisclosure(
                     'Lorecards',
-                    createLoredeckCreatorEntryDraftCard(cached.brief, cached),
+                    artifactFactory(cached => createLoredeckCreatorEntryDraftCard(cached.brief, cached)),
                     { open: pipeline.currentStep.id === 'lorecards', state: pipeline.stages.find(stage => stage.id === 'lorecards')?.detail || 'Locked', anchor: 'lorecards' }
                 ));
                 if (generatedPack) {
                     card.appendChild(createLoredeckCreatorArtifactDisclosure(
                         'Pack Health and Finalize',
-                        createLoredeckCreatorPipelineReadinessCard(generatedPack, cached),
+                        artifactFactory((cached, pipeline) => createLoredeckCreatorPipelineReadinessCard(pipeline.generatedPack, cached, pipeline)),
                         { open: ['health', 'finalize'].includes(pipeline.currentStep.id), state: pipeline.stages.find(stage => stage.id === 'health')?.detail || 'Not ready', anchor: 'deck-health' }
                     ));
                 }
             }
         }
     }
+    renderContext = null;
     return card;
 }
 

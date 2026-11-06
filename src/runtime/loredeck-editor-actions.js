@@ -7,6 +7,7 @@
  */
 
 import { setLoredeckActionButtonBusy } from '../loredecks/loredeck-action-rows.js';
+import { closeLoredeckCreatorWorkbench } from '../loredecks/loredeck-creator-panel.js';
 import {
     buildEmbeddedCustomManifest,
     buildLoredeckStatsFromEntries,
@@ -112,7 +113,7 @@ function isLoredeckLibraryOpen() { return dep('isLoredeckLibraryOpen', () => fal
 function renderLoredeckLibraryOverlay() { return dep('renderLoredeckLibraryOverlay')(); }
 function closeLoredeckCreatorWorkbenchOverlay() {
     return dep('closeLoredeckCreatorWorkbenchOverlay', () => {
-        if (typeof document !== 'undefined') document.querySelector('.saga-loredeck-creator-workbench-overlay')?.remove();
+        if (typeof document !== 'undefined') closeLoredeckCreatorWorkbench();
     })();
 }
 function getLoredeckFinalizationStepTimeoutMs(label, fallbackMs) {

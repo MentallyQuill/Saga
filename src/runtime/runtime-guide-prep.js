@@ -144,10 +144,11 @@ function prepareOpenContinuityEditor(step = {}) {
     return createGuidePrepareResult(true);
 }
 
-function prepareOpenLoredeckCreator() {
+function prepareOpenLoredeckCreator(step = {}) {
     dep('setExperienceMode')('advanced');
     dep('navigateRuntimeTab')('loredecks');
     dep('openLoredeckCreatorWorkbench')();
+    dep('prepareLoredeckCreatorTourTarget')(step.target);
     return createGuidePrepareResult(true);
 }
 
@@ -157,11 +158,13 @@ function prepareOpenCreatorProject(step = {}) {
     const job = getRuntimeGuideCreatorProjectJob(step);
     if (!job?.jobId) {
         dep('openLoredeckCreatorWorkbench')();
+        dep('prepareLoredeckCreatorTourTarget')(step.target);
         return createGuidePrepareResult(false, 'Deck Maker is open, but there is no in-progress Deck Maker project to resume yet.');
     }
     const activated = activateLoredeckCreatorJob(job.jobId, { syncPrompt: false });
     dep('setLoredeckCreatorBriefCacheEntry')('current', activated?.job || job);
     dep('openLoredeckCreatorWorkbench')();
+    dep('prepareLoredeckCreatorTourTarget')(step.target);
     return createGuidePrepareResult(true);
 }
 

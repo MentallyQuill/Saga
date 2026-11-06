@@ -157,6 +157,7 @@ export function configureRuntimeComposition(deps = {}) {
         openContextWorkbenchForPack: deps.openContextWorkbenchForPack,
         getContextWorkbenchStack: deps.getContextWorkbenchStack,
         openLoredeckCreatorWorkbench: deps.openLoredeckCreatorWorkbench,
+        prepareLoredeckCreatorTourTarget: deps.prepareLoredeckCreatorTourTarget,
         openLoredeckHealthCenter: deps.openLoredeckHealthCenter,
         setLoredeckCreatorBriefCacheEntry: deps.setLoredeckCreatorBriefCacheEntry,
     });

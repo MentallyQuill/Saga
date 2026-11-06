@@ -5,6 +5,7 @@ import {
     createKeyValue,
     createStatusPill,
     humanizeScopeKey,
+    hideFloatingTooltip,
     isPlainObjectValue,
     setChipTone,
     toast,
@@ -26,6 +27,27 @@ let creatorPanelDeps = {};
 let loredeckCreatorWorkbenchRefreshQueued = false;
 const loredeckCreatorDisclosureState = new Map();
 let loredeckCreatorDisclosureStateVersion = 0;
+const loredeckCreatorDisclosureChildren = new WeakMap();
+const loredeckCreatorViewCallbacks = new Map();
+
+function scheduleLoredeckCreatorViewCallback(callback) {
+    const run = () => {
+        loredeckCreatorViewCallbacks.delete(id);
+        callback();
+    };
+    const frame = typeof requestAnimationFrame === 'function';
+    const id = frame ? requestAnimationFrame(run) : setTimeout(run, 0);
+    loredeckCreatorViewCallbacks.set(id, frame);
+}
+
+function cancelLoredeckCreatorViewCallbacks() {
+    for (const [id, frame] of loredeckCreatorViewCallbacks) {
+        if (frame) cancelAnimationFrame(id);
+        else clearTimeout(id);
+    }
+    loredeckCreatorViewCallbacks.clear();
+    loredeckCreatorWorkbenchRefreshQueued = false;
+}
 
 export function configureLoredeckCreatorPanel(deps = {}) {
     creatorPanelDeps = { ...creatorPanelDeps, ...(deps || {}) };
@@ -92,7 +114,7 @@ function handleLoredeckCreatorEntryDraft(button, options) { return dep('handleLo
 function confirmAction(title, message, options) { return dep('confirmAction', async () => false)(title, message, options); }
 function createLoredeckCreatorDraftReviewSection(pack) { return dep('createLoredeckCreatorDraftReviewSection', () => null)(pack); }
 function createLoredeckPendingReviewCard(pack) { return dep('createLoredeckPendingReviewCard', () => null)(pack); }
-function getLoredeckCreatorPipelineReadinessView(pack, cached) { return dep('getLoredeckCreatorPipelineReadinessView', () => null)(pack, cached); }
+function getLoredeckCreatorPipelineReadinessView(pack, cached, renderModel) { return dep('getLoredeckCreatorPipelineReadinessView', () => null)(pack, cached, renderModel); }
 function validateLoredeckForEditor(pack, button, options) { return dep('validateLoredeckForEditor', async () => ({ health: null }))(pack, button, options); }
 function openLoredeckHealthCenter(packId, options) { return dep('openLoredeckHealthCenter', () => null)(packId, options); }
 function attemptLoredeckHealthFixes(pack, button) {
@@ -104,13 +126,13 @@ function isRuntimeMobileShell() { return dep('isRuntimeMobileShell', () => false
 function markTourTarget(element, target) { return dep('markTourTarget', value => value)(element, target); }
 
 export function openLoredeckCreatorWorkbench(options = {}) {
-    document.querySelector('.saga-loredeck-creator-workbench-overlay')?.remove();
+    closeLoredeckCreatorWorkbench();
     loredeckCreatorDisclosureState.clear();
     loredeckCreatorDisclosureStateVersion = 0;
     recoverLoredeckCreatorCurrentActiveGenerationOnOpen({ toast: true });
     const overlay = document.createElement('div');
     overlay.className = 'saga-lore-workbench-overlay saga-loredeck-creator-workbench-overlay';
-    wireOverlayBackdropClose(overlay, () => overlay.remove());
+    wireOverlayBackdropClose(overlay, closeLoredeckCreatorWorkbench);
     document.body.appendChild(overlay);
 
     const shell = document.createElement('div');
@@ -126,20 +148,21 @@ export function openLoredeckCreatorWorkbench(options = {}) {
     const body = document.createElement('div');
     body.className = 'saga-loredeck-creator-workbench-body';
     markTourTarget(body, 'loredecks.creator.body');
-    body.appendChild(createLoredeckCreatorCard(getState(), { embedded: true, showHeader: false }));
+    body.appendChild(createLoredeckCreatorCard(getState(), { embedded: true, showHeader: false, cached, pipeline }));
     shell.appendChild(body);
     if (isRuntimeMobileShell()) shell.appendChild(createLoredeckCreatorWorkbenchActions(cached, { mobile: true, showClose: true }));
     const anchor = String(options.anchor || '').trim();
     if (anchor) {
         const scroll = () => scrollLoredeckCreatorWorkbenchToAnchor(anchor);
         scroll();
-        if (typeof requestAnimationFrame === 'function') requestAnimationFrame(scroll);
+        scheduleLoredeckCreatorViewCallback(scroll);
     }
 }
 
 export function refreshLoredeckCreatorWorkbenchBody(options = {}) {
     const body = document.querySelector('.saga-loredeck-creator-workbench-body');
     if (!body) return false;
+    cancelLoredeckCreatorViewCallbacks();
     const scrollState = options.preserveScroll === false ? null : captureLoredeckCreatorWorkbenchScrollState(body);
     const shell = body.closest('.saga-loredeck-creator-workbench-shell');
     const cached = getLoredeckCreatorBriefCache();
@@ -156,13 +179,15 @@ export function refreshLoredeckCreatorWorkbenchBody(options = {}) {
     } else {
         mobileActions?.remove();
     }
-    body.replaceChildren(createLoredeckCreatorCard(getState(), { embedded: true, showHeader: false }));
+    disposeLoredeckCreatorDisclosureChildren(body);
+    hideFloatingTooltip();
+    body.replaceChildren(createLoredeckCreatorCard(getState(), { embedded: true, showHeader: false, cached, pipeline }));
     if (options.preserveScroll !== false) {
         const restore = () => {
             restoreLoredeckCreatorWorkbenchScrollState(body, scrollState);
         };
         restore();
-        if (typeof requestAnimationFrame === 'function') requestAnimationFrame(restore);
+        scheduleLoredeckCreatorViewCallback(restore);
     }
     return true;
 }
@@ -245,7 +270,10 @@ function restoreLoredeckCreatorDetailsState(body, detailsState = []) {
         const open = remembered && Number(remembered.version || 0) > Number(item.capturedVersion || 0)
             ? remembered.open === true
             : item.open === true;
-        if (details) details.open = open;
+        if (details) {
+            details.open = open;
+            if (open) materializeLoredeckCreatorDisclosure(details);
+        }
     }
 }
 
@@ -298,7 +326,11 @@ function getLoredeckCreatorWorkbenchScrollAnchor(body) {
 function restoreLoredeckCreatorWorkbenchScrollAnchor(body, anchor = null) {
     if (!body || !anchor?.id) return;
     const selectorId = String(anchor.id).replace(/"/g, '\\"');
-    const next = body.querySelector(`[data-saga-creator-anchor="${selectorId}"]`);
+    let next = body.querySelector(`[data-saga-creator-anchor="${selectorId}"]`);
+    if (!next) {
+        prepareLoredeckCreatorAnchor(body, anchor.id);
+        next = body.querySelector(`[data-saga-creator-anchor="${selectorId}"]`);
+    }
     if (!next) return;
     const bodyRect = body.getBoundingClientRect();
     const rect = next.getBoundingClientRect();
@@ -313,8 +345,7 @@ export function queueLoredeckCreatorWorkbenchRefresh(options = {}) {
         loredeckCreatorWorkbenchRefreshQueued = false;
         refreshLoredeckCreatorWorkbenchBody(options);
     };
-    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(refresh);
-    else setTimeout(refresh, 0);
+    scheduleLoredeckCreatorViewCallback(refresh);
     return true;
 }
 
@@ -412,8 +443,13 @@ export function createLoredeckCreatorPipelineHeader(cached = {}, pipeline = getL
     return wrap;
 }
 
-function closeLoredeckCreatorWorkbench() {
-    document.querySelector('.saga-loredeck-creator-workbench-overlay')?.remove();
+export function closeLoredeckCreatorWorkbench() {
+    cancelLoredeckCreatorViewCallbacks();
+    const overlay = document.querySelector('.saga-loredeck-creator-workbench-overlay');
+    if (!overlay) return;
+    disposeLoredeckCreatorDisclosureChildren(overlay);
+    hideFloatingTooltip();
+    overlay.remove();
 }
 
 function createLoredeckCreatorWorkbenchActions(cached = {}, options = {}) {
@@ -503,6 +539,7 @@ export function scrollLoredeckCreatorWorkbenchToAnchor(anchorId = '') {
     const id = String(anchorId || '').trim();
     if (!id) return false;
     const body = document.querySelector('.saga-loredeck-creator-workbench-body');
+    prepareLoredeckCreatorAnchor(body, id);
     const selectorId = id.replace(/"/g, '\\"');
     const target = body?.querySelector(`[data-saga-creator-anchor="${selectorId}"]`)
         || (id === 'review-queue' ? body?.querySelector('.saga-loredeck-creator-pending-review') : null);
@@ -514,6 +551,7 @@ export function scrollLoredeckCreatorWorkbenchToAnchor(anchorId = '') {
     if (details) {
         details.open = true;
         rememberLoredeckCreatorDisclosureState(details.dataset?.sagaCreatorAnchor || '', true);
+        materializeLoredeckCreatorDisclosure(details);
     }
     target.scrollIntoView({ behavior: 'smooth', block: 'start' });
     return true;
@@ -528,7 +566,44 @@ function rememberLoredeckCreatorDisclosureState(anchor = '', open = false) {
     });
 }
 
-export function createLoredeckCreatorArtifactDisclosure(title, child, options = {}) {
+function prepareLoredeckCreatorAnchor(body, id) {
+    const owner = ({ finalize: 'deck-health', 'brief-review': 'scope-brief', 'context-tags': 'context-plan' })[id] || id;
+    const selectorId = String(owner).replace(/"/g, '\\"');
+    const details = body?.querySelector(`details.saga-loredeck-creator-artifact[data-saga-creator-anchor="${selectorId}"]`);
+    if (!details) return false;
+    details.open = true;
+    rememberLoredeckCreatorDisclosureState(owner, true);
+    materializeLoredeckCreatorDisclosure(details);
+    return true;
+}
+
+export function prepareLoredeckCreatorTourTarget(targetName = '') {
+    const name = String(targetName).replace(/^loredecks\.creator\./, '');
+    const groups = {
+        'scope-brief': ['brief'],
+        'story-outline': ['outline'],
+        'title-sets': ['titlePass', 'titleActions', 'generateNextTitleBatch', 'generateRemainingTitleBatches', 'approveSelectedTitles', 'titleRevision', 'reviseSelectedTitles'],
+        'context-plan': ['planning', 'planningActions', 'planContextTags'],
+        'review-queue': ['review'],
+        lorecards: ['entries', 'entryActions', 'draftLorecards', 'autoDraftAll'],
+        'deck-health': ['readiness', 'readinessHealthActions', 'runPackHealth', 'openPackHealthCenter', 'attemptHealthFixing', 'finalizeActions', 'openCoveragePlan', 'finalizeAnyway'],
+    };
+    const owner = Object.keys(groups).find(anchor => groups[anchor].includes(name));
+    return owner ? prepareLoredeckCreatorAnchor(document.querySelector('.saga-loredeck-creator-workbench-body'), owner) : false;
+}
+
+export function materializeLoredeckCreatorDisclosure(details) {
+    return loredeckCreatorDisclosureChildren.get(details)?.materialize() || null;
+}
+
+export function disposeLoredeckCreatorDisclosureChildren(root) {
+    if (!root) return;
+    // Take the descendant list before disposing a parent handle that may remove DOM.
+    const disclosures = [root, ...root.querySelectorAll('details.saga-loredeck-creator-artifact')];
+    for (const details of disclosures.reverse()) loredeckCreatorDisclosureChildren.get(details)?.dispose();
+}
+
+export function createLoredeckCreatorArtifactDisclosure(title, childOrFactory, options = {}) {
     const details = document.createElement('details');
     details.className = 'saga-loredeck-creator-artifact';
     const anchor = String(options.anchor || '').trim();
@@ -544,7 +619,35 @@ export function createLoredeckCreatorArtifactDisclosure(title, child, options = 
     state.textContent = options.state || (details.open ? 'Open' : 'Collapsed');
     summary.appendChild(state);
     details.appendChild(summary);
-    details.appendChild(child);
+    let handle = null;
+    let disposed = false;
+    const materialize = () => {
+        if (disposed) return null;
+        if (handle) return handle.element;
+        const result = typeof childOrFactory === 'function' ? childOrFactory() : childOrFactory;
+        const next = result && 'element' in result ? result : { element: result };
+        if (next.element) details.appendChild(next.element);
+        handle = next;
+        return handle.element;
+    };
+    loredeckCreatorDisclosureChildren.set(details, {
+        materialize,
+        dispose() {
+            if (disposed) return;
+            disposed = true;
+            handle?.dispose?.();
+            handle = null;
+        },
+    });
+    details.addEventListener('toggle', () => {
+        if (!details.open || disposed) return;
+        try {
+            materialize();
+        } catch (error) {
+            toast(error?.message || String(error), 'error');
+        }
+    });
+    if (details.open || typeof childOrFactory !== 'function') materialize();
     if (anchor) {
         summary.addEventListener('click', () => {
             rememberLoredeckCreatorDisclosureState(anchor, !details.open);
@@ -555,7 +658,7 @@ export function createLoredeckCreatorArtifactDisclosure(title, child, options = 
             }
         });
         details.addEventListener('toggle', () => {
-            rememberLoredeckCreatorDisclosureState(anchor, details.open);
+            if (!disposed) rememberLoredeckCreatorDisclosureState(anchor, details.open);
         });
     }
     return details;
@@ -1079,9 +1182,10 @@ function createLoredeckCreatorTitlePassActions(brief = {}, cached = {}, context 
         ? context.remainingTitleBatches
         : getLoredeckCreatorRemainingTitleBatches(cached);
     const selectedCount = Number.isFinite(Number(context.selectedCount)) ? Number(context.selectedCount) : getLoredeckCreatorSelectedTitleDrafts(cached).length;
+    const approvedIds = context.approvedIds || getLoredeckCreatorApprovedTitleIds(cached);
     const selectedApprovedCount = Number.isFinite(Number(context.selectedApprovedCount))
         ? Number(context.selectedApprovedCount)
-        : getLoredeckCreatorSelectedTitleDrafts(cached).filter(draft => getLoredeckCreatorApprovedTitleIds(cached).has(draft.titleId)).length;
+        : getLoredeckCreatorSelectedTitleDrafts(cached).filter(draft => approvedIds.has(draft.titleId)).length;
     const actions = document.createElement('div');
     actions.className = 'saga-primary-actions';
     markTourTarget(actions, 'loredecks.creator.titleActions');
@@ -1348,8 +1452,9 @@ function createLoredeckCreatorPlanningBatchPlanner(brief = {}, cached = {}) {
 }
 
 export function createLoredeckCreatorPlanningCard(brief = {}, cached = {}) {
+    const approvedIds = getLoredeckCreatorApprovedTitleIds(cached);
     const approvedTitles = getLoredeckCreatorTitleDrafts(cached)
-        .filter(draft => getLoredeckCreatorApprovedTitleIds(cached).has(draft.titleId));
+        .filter(draft => approvedIds.has(draft.titleId));
     const planningBatches = getLoredeckCreatorPlanningBatchRows(cached);
     const queuedBatchIds = getLoredeckCreatorPlanningQueuedBatchIds(cached);
     const eligiblePlanningBatchCount = planningBatches.filter(batch => batch.approvedTitleCount > 0).length;
@@ -1664,8 +1769,9 @@ export function createLoredeckCreatorEntryDraftCard(brief = {}, cached = {}) {
     const planning = getLoredeckCreatorAcceptedPlanningStatus(generatedPack);
     const acceptedPlanningBatchIds = getLoredeckCreatorPlanningAcceptedBatchIds(cached);
     const queuedPlanningBatchIds = getLoredeckCreatorPlanningQueuedBatchIds(cached);
+    const approvedIds = getLoredeckCreatorApprovedTitleIds(cached);
     const approvedTitles = getLoredeckCreatorTitleDrafts(cached)
-        .filter(draft => getLoredeckCreatorApprovedTitleIds(cached).has(draft.titleId));
+        .filter(draft => approvedIds.has(draft.titleId));
     const draftChanges = generatedPack ? getLoredeckCreatorDraftChanges(generatedPack.packId) : [];
     const hasDraftsAwaitingReview = draftChanges.length > 0;
     const pendingCount = generatedPack ? getLoredeckCreatorPendingEntryCount(generatedPack) : 0;
@@ -1916,8 +2022,8 @@ function createLoredeckCreatorReadinessHealthActions(pack = {}, readiness = {}) 
     return actions;
 }
 
-export function createLoredeckCreatorPipelineReadinessCard(pack = {}, cached = null) {
-    const view = getLoredeckCreatorPipelineReadinessView(pack, cached);
+export function createLoredeckCreatorPipelineReadinessCard(pack = {}, cached = null, renderModel = null) {
+    const view = getLoredeckCreatorPipelineReadinessView(pack, cached, renderModel);
     if (!view) return null;
     const readiness = view.readiness || {};
     const pipeline = view.pipeline || readiness.pipeline || {};

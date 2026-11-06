@@ -1038,7 +1038,7 @@ assert(
     && creatorPanel.includes('if (!(options.workbench && isRuntimeMobileShell()))')
     && /if \(!\(options\.workbench && isRuntimeMobileShell\(\)\)\) \{[\s\S]*?emblem\.textContent = 'S';[\s\S]*?titleRow\.appendChild\(emblem\);/.test(creatorPanel)
     && creatorPanel.includes("createButton('Close', 'Close the Deck Maker wizard.', closeLoredeckCreatorWorkbench)")
-    && creatorPanel.includes('wireOverlayBackdropClose(overlay, () => overlay.remove())')
+    && creatorPanel.includes('wireOverlayBackdropClose(overlay, closeLoredeckCreatorWorkbench)')
     && /@media \(max-width:\s*640px\)\s*\{[\s\S]*?\.saga-loredeck-creator-workbench-overlay \.saga-loredeck-creator-workbench-shell-mobile\s*\{[\s\S]*?height:\s*100svh;[\s\S]*?max-height:\s*100svh;/.test(style)
     && !/\.saga-loredeck-creator-workbench-overlay \.saga-loredeck-creator-workbench-shell-mobile\s*\{[\s\S]{0,220}max-height:\s*none;/.test(style)
     && /@media \(max-width:\s*640px\)\s*\{[\s\S]*?\.saga-loredeck-creator-workbench-shell-mobile \.saga-loredeck-creator-workbench-body\s*\{[\s\S]*?flex:\s*1 1 auto;[\s\S]*?min-height:\s*0;/.test(style)
