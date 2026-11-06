@@ -30,7 +30,8 @@ import {
     createLoredeckActionRow,
     setLoredeckActionButtonBusy,
 } from './loredeck-action-rows.js';
-import { getAssetSrc, normalizeAssetRef, normalizePassiveAssetPath } from '../theme/runtime-theme.js';
+import { bindLoredeckCoverImage, disposeLoredeckCoverImages, getLoredeckAssetRef } from './loredeck-cover-image.js';
+export { getLoredeckAssetRef } from './loredeck-cover-image.js';
 import {
     buildFolderTree,
     createFolderIdFromPath,
@@ -287,6 +288,7 @@ export function closeLoredeckLibraryWindow() {
     loredeckLibraryMobileReorderOpen = false;
     const overlay = document.querySelector('.saga-loredeck-library-overlay');
     cancelLoredeckLibraryRowRender(overlay?.querySelector('.saga-loredeck-library-hierarchy-list'));
+    disposeLoredeckCoverImages(overlay);
     overlay?.remove();
 }
 
@@ -471,6 +473,7 @@ function renderLoredeckLibraryOverlayBody(options = {}) {
     loredeckLibraryHierarchyRefreshFrame = 0;
     const previousOverlay = document.querySelector('.saga-loredeck-library-overlay');
     cancelLoredeckLibraryRowRender(previousOverlay?.querySelector('.saga-loredeck-library-hierarchy-list'));
+    disposeLoredeckCoverImages(previousOverlay);
     previousOverlay?.remove();
     if (!loredeckLibraryOpen) return;
 
@@ -757,6 +760,7 @@ function refreshLoredeckLibrarySelectionSurfacesBody(options = {}) {
     ));
 
     const stackPane = overlay.querySelector('.saga-loredeck-library-pane-stack');
+    if (options.stackChanged) disposeLoredeckCoverImages(stackPane);
     if (options.stackChanged) stackPane?.replaceWith(createLoredeckActiveStackPane(
         context.stack,
         context.library,
@@ -780,6 +784,7 @@ function refreshLoredeckLibraryExportSelection(overlay, selectedPacks) {
 function refreshLoredeckLibrarySelectedDetails(overlay, context, options = {}) {
     const details = overlay.querySelector('.saga-loredeck-library-details');
     const detailsKey = `${context.selectedPack?.packId || ''}|${context.selectedFolderDetails?.id || ''}|${loredeckLibraryDetailsTab}`;
+    if (options.stackChanged || details?.dataset.selectionKey !== detailsKey) disposeLoredeckCoverImages(details);
     if (options.stackChanged || details?.dataset.selectionKey !== detailsKey) details?.replaceWith(createLoredeckLibraryDetailsPanel(
         context.selectedPack,
         context.stack,
@@ -827,6 +832,7 @@ function refreshLoredeckLibraryVisibleSurfacesBody() {
             { mobileTouch },
         );
         cancelLoredeckLibraryRowRender(currentList);
+        disposeLoredeckCoverImages(currentList);
         currentList.replaceWith(nextList);
         restoreLoredeckLibraryRowScroll(nextList, top, left);
     }
@@ -965,6 +971,7 @@ function removeLoredeckLibraryFolderDescendantElements(row) {
     while (next && getLoredeckLibraryHierarchyElementDepth(next) > depth) {
         const current = next;
         next = next.nextElementSibling;
+        disposeLoredeckCoverImages(current);
         current.remove();
         removed += 1;
     }
@@ -1074,6 +1081,7 @@ function refreshLoredeckLibraryHierarchyListBody() {
         { mobileTouch: currentList.classList.contains('saga-loredeck-library-mobile-list') },
     );
     cancelLoredeckLibraryRowRender(currentList);
+    disposeLoredeckCoverImages(currentList);
     currentList.replaceWith(nextList);
     restoreLoredeckLibraryRowScroll(nextList, top, left);
     return true;
@@ -1861,7 +1869,7 @@ function createLoredeckLibraryMobileReorderSheet(stack = [], library = []) {
         grip.innerHTML = '<span></span>';
         row.appendChild(grip);
 
-        row.appendChild(createLoredeckDeckVisual(pack, 'saga-loredeck-library-mobile-reorder-visual'));
+        row.appendChild(createLoredeckDeckVisual(pack, 'saga-loredeck-library-mobile-reorder-visual', { usage: 'list' }));
 
         const main = document.createElement('div');
         main.className = 'saga-loredeck-library-mobile-reorder-main';
@@ -2839,14 +2847,20 @@ function createLoredeckLibraryFolderCoverStrip(coverPacks = [], totalCoverableCo
         tile.style.setProperty('--saga-cover-index', String(index));
         tile.dataset.coverTile = 'true';
         const img = document.createElement('img');
-        img.src = getAssetSrc(cover);
         img.alt = '';
-        img.loading = 'lazy';
         img.draggable = false;
         if (cover.focalPoint) {
             img.style.objectPosition = `${Math.round(cover.focalPoint.x * 100)}% ${Math.round(cover.focalPoint.y * 100)}%`;
         }
         tile.appendChild(img);
+        bindLoredeckCoverImage(tile, img, pack, {
+            usage: 'list',
+            onOriginalError() {
+                tile.classList.remove('saga-loredeck-library-folder-cover-tile-contain');
+                tile.replaceChildren();
+                tile.textContent = getLoredeckMonogram(pack);
+            },
+        });
         addTooltip(tile, pack.title || pack.packId || 'Loredeck cover');
         strip.appendChild(tile);
     });
@@ -3360,7 +3374,7 @@ function createLoredeckLibraryDeckCard(pack, stack = [], canonDb = null, health 
         card.appendChild(grip);
     }
 
-    card.appendChild(createLoredeckDeckVisual(pack, 'saga-loredeck-library-monogram'));
+    card.appendChild(createLoredeckDeckVisual(pack, 'saga-loredeck-library-monogram', { usage: 'list' }));
     if (mobileTouch) {
         const orderBadge = document.createElement('span');
         orderBadge.className = 'saga-loredeck-library-mobile-order-badge';
@@ -3459,7 +3473,7 @@ function createLoredeckActiveStackCard(pack, item, index, stackLength, canonDb =
     });
     card.appendChild(grip);
 
-    card.appendChild(createLoredeckDeckVisual(pack, 'saga-loredeck-library-monogram'));
+    card.appendChild(createLoredeckDeckVisual(pack, 'saga-loredeck-library-monogram', { usage: 'list' }));
 
     const main = document.createElement('div');
     main.className = 'saga-loredeck-library-stack-main';
@@ -4511,6 +4525,7 @@ function createLoredeckLibraryDetailsPanelBody(pack = null, stack = [], canonDb 
     const identity = document.createElement('div');
     identity.className = 'saga-loredeck-library-detail-identity';
     identity.appendChild(createLoredeckDeckVisual(pack, 'saga-loredeck-library-detail-monogram', {
+        usage: 'detail',
         editableCover: true,
         coverLongPressOnly: mobile,
     }));
@@ -5005,11 +5020,17 @@ export function openLoredeckMetadataEditor(packId = '') {
         return;
     }
     selectLoredeckForDetails(pack.packId, { refresh: false });
-    document.querySelector('.saga-loredeck-metadata-overlay')?.remove();
+    const previousMetadata = document.querySelector('.saga-loredeck-metadata-overlay');
+    disposeLoredeckCoverImages(previousMetadata);
+    previousMetadata?.remove();
 
     const overlay = document.createElement('div');
     overlay.className = 'saga-lore-workbench-overlay saga-loredeck-metadata-overlay';
-    wireOverlayBackdropClose(overlay, () => overlay.remove());
+    const close = () => {
+        disposeLoredeckCoverImages(overlay);
+        overlay.remove();
+    };
+    wireOverlayBackdropClose(overlay, close);
     document.body.appendChild(overlay);
 
     const shell = document.createElement('div');
@@ -5029,7 +5050,7 @@ export function openLoredeckMetadataEditor(packId = '') {
     subtitle.textContent = pack.title || pack.packId;
     titleWrap.appendChild(subtitle);
     header.appendChild(titleWrap);
-    header.appendChild(createButton('Close', 'Close the Loredeck metadata window.', () => overlay.remove()));
+    header.appendChild(createButton('Close', 'Close the Loredeck metadata window.', close));
     shell.appendChild(header);
 
     const body = document.createElement('div');
@@ -5055,7 +5076,7 @@ function createLoredeckMetadataEditorCard(pack) {
 
     const heading = document.createElement('div');
     heading.className = 'saga-loredeck-metadata-heading';
-    heading.appendChild(createLoredeckDeckVisual(pack, 'saga-loredeck-library-detail-monogram'));
+    heading.appendChild(createLoredeckDeckVisual(pack, 'saga-loredeck-library-detail-monogram', { usage: 'detail' }));
     const main = document.createElement('div');
     main.className = 'saga-loredeck-row-main';
     const title = document.createElement('div');
@@ -5459,37 +5480,6 @@ function getLoredeckMonogram(pack = {}) {
     return `${words[0][0] || ''}${words[1][0] || ''}`.toUpperCase();
 }
 
-function resolveLoredeckAssetPath(pack = {}, assetPath = '') {
-    const path = normalizePassiveAssetPath(assetPath);
-    if (!path) return '';
-    if (/^(?:data:image\/|https?:\/\/|\.\/|content\/|\/user\/files\/)/i.test(path)) return path;
-    const manifest = String(pack.manifest || pack.manifestData?.manifest || '').replace(/\\/g, '/').trim();
-    const base = manifest.includes('/') ? manifest.replace(/[^/]*$/, '') : '';
-    return base ? normalizePassiveAssetPath(`${base}${path}`) : path;
-}
-
-export function getLoredeckAssetRef(pack = {}, key = 'cover') {
-    const assets = pack.assets && typeof pack.assets === 'object' && !Array.isArray(pack.assets) ? pack.assets : {};
-    const manifestAssets = pack.manifestData?.assets && typeof pack.manifestData.assets === 'object' && !Array.isArray(pack.manifestData.assets)
-        ? pack.manifestData.assets
-        : {};
-    const raw = assets[key]
-        || manifestAssets[key]
-        || (key === 'cover'
-            ? assets.deckCover
-                || manifestAssets.deckCover
-                || pack.assetRefs?.cover
-                || pack.coverFile
-                || pack.coverPath
-                || pack.cover
-                || pack.coverImage
-            : null);
-    const asset = normalizeAssetRef(raw);
-    if (!asset) return null;
-    const resolvedPath = resolveLoredeckAssetPath(pack, asset.path);
-    return resolvedPath ? { ...asset, path: resolvedPath } : null;
-}
-
 function setLoredeckDeckVisualFallback(visual, pack = {}) {
     visual.classList.remove('saga-loredeck-library-visual-cover', 'saga-loredeck-library-visual-contain');
     visual.classList.add('saga-loredeck-library-visual-fallback');
@@ -5561,20 +5551,22 @@ export function createLoredeckDeckVisual(pack = {}, className = 'saga-loredeck-l
     }
     if (cover) {
         const img = document.createElement('img');
-        img.src = getAssetSrc(cover);
         img.alt = cover.alt || `${pack.title || pack.packId || 'Loredeck'} cover`;
         img.draggable = false;
         if (cover.focalPoint) {
             img.style.objectPosition = `${Math.round(cover.focalPoint.x * 100)}% ${Math.round(cover.focalPoint.y * 100)}%`;
         }
-        img.addEventListener('error', () => {
-            setLoredeckDeckVisualFallback(visual, pack);
-            if (coverActions) visual.appendChild(coverActions);
-        }, { once: true });
         visual.classList.add('saga-loredeck-library-visual-cover');
         if (cover.fit === 'contain') visual.classList.add('saga-loredeck-library-visual-contain');
         visual.appendChild(img);
         if (coverActions) visual.appendChild(coverActions);
+        bindLoredeckCoverImage(visual, img, pack, {
+            usage: options.usage === 'list' ? 'list' : 'detail',
+            onOriginalError() {
+                setLoredeckDeckVisualFallback(visual, pack);
+                if (coverActions) visual.appendChild(coverActions);
+            },
+        });
         addTooltip(visual, coverLongPressOnly ? 'Long-press to replace this cover image.' : (cover.title || cover.alt || `${pack.title || pack.packId} Deck Cover.`));
         return visual;
     }

@@ -11,6 +11,7 @@ import {
 import { getCanonLoreDatabaseSync, loadCanonLoreDatabase } from '../context/canon-lore-db.js';
 import { buildLoredeckCreatorProjectCardModels } from './loredeck-creator-projects.js';
 import { createLoredeckJobProgressBar } from './loredeck-job-view.js';
+import { disposeLoredeckCoverImages } from './loredeck-cover-image.js';
 import { buildFolderTree, getFolderPath } from './loredeck-library-index.js';
 import { isLoredeckLibraryFolderDescendant, moveLoredecksToLibraryFolderPlacement } from './loredeck-library-service.js';
 import {
@@ -266,6 +267,7 @@ function renderLoredeckCreatorProjectShelfContent(card, state = getState(), pres
     normalizeLoredeckCreatorProjectSelection(allModels);
     const models = getFilteredLoredeckCreatorProjectModels(allModels, libraryIndex);
     const activeJob = getActiveLoredeckCreatorJob(state);
+    disposeLoredeckCoverImages(card);
     card.replaceChildren();
     const header = document.createElement('div');
     header.className = 'saga-loredeck-creator-project-header';
@@ -657,7 +659,7 @@ function createLoredeckCreatorProjectCard(model = {}, options = {}) {
         packId: model.generatedPackId || model.jobId || model.id,
         title: model.title || 'Deck Maker Project',
     };
-    card.appendChild(createLoredeckDeckVisual(visualPack, 'saga-loredeck-library-monogram saga-loredeck-creator-project-visual'));
+    card.appendChild(createLoredeckDeckVisual(visualPack, 'saga-loredeck-library-monogram saga-loredeck-creator-project-visual', { usage: 'list' }));
 
     const main = document.createElement('div');
     main.className = 'saga-loredeck-creator-project-main';
