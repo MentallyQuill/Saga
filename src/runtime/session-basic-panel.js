@@ -163,7 +163,7 @@ const BASIC_CHECKLIST_TOUR_TASKS_BY_ROW = Object.freeze({
                 expected: 'One or two Loredecks are selected before stack changes.',
                 when: 'Use this before adding anything to the active stack.',
             }),
-            basicChecklistTourStep('basic-checklist-loredecks-add', 'Add to Active Stack', 'Use the transfer controls to add the selected Loredecks to the active stack. On mobile, the same transfer action is grouped with the Library card controls.', 'loredecks', 'loredecks.library.transfer', {
+            basicChecklistTourStep('basic-checklist-loredecks-add', 'Add to Active Chat Stack', 'Open the chat you want to configure, then use the transfer controls to add the selected Loredecks to its Active Chat Stack. Each chat saves its own stack. On mobile, the same transfer action is grouped with the Library card controls.', 'loredecks', 'loredecks.library.transfer', {
                 fallbackTarget: 'loredecks.library.list',
                 prepare: 'openLoredeckLibrary',
                 expected: 'The active stack contains the selected Core and story-position Loredecks.',

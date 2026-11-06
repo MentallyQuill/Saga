@@ -3185,7 +3185,7 @@ function createLoredeckActiveStackPane(stack = [], library = [], canonDb = null,
     const titleWrap = document.createElement('div');
     const title = document.createElement('div');
     title.className = 'saga-loredeck-library-pane-title';
-    title.textContent = 'Active Stack';
+    title.textContent = 'Active Chat Stack';
     titleWrap.appendChild(title);
     const subtitle = document.createElement('div');
     subtitle.className = 'saga-loredeck-library-pane-subtitle';
@@ -3201,6 +3201,11 @@ function createLoredeckActiveStackPane(stack = [], library = [], canonDb = null,
     head.appendChild(stackMeta);
     pane.appendChild(head);
 
+    const chatScope = document.createElement('div');
+    chatScope.className = 'saga-loredeck-library-pane-subtitle';
+    chatScope.textContent = 'Saved to the active chat. Switching chats loads that chat\'s Loredecks. Open a chat before adding Loredecks.';
+    pane.appendChild(chatScope);
+
     if (stats.duplicateCount) {
         const duplicateSummary = document.createElement('div');
         duplicateSummary.className = 'saga-loredeck-library-stack-duplicate-summary';
@@ -3211,7 +3216,7 @@ function createLoredeckActiveStackPane(stack = [], library = [], canonDb = null,
     const list = document.createElement('div');
     list.className = 'saga-loredeck-library-stack-list';
     if (!stack.length) {
-        list.appendChild(createEmptyMessage('No active stack. Add decks from the Library to build this session loadout.'));
+        list.appendChild(createEmptyMessage('No Loredecks in this chat\'s stack. Open a chat, then add Loredecks from the Library.'));
     } else {
         const visibleStackPacks = resolveLoredeckStackItems(stack, libraryIndex, {
             packs: stackPackMap,
