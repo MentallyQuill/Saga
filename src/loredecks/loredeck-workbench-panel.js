@@ -1986,6 +1986,7 @@ function createWorkbenchFormListeners(form) {
         revisions: new Map(inputs.map(input => [input.name, 0])),
         composing: new Set(),
         acknowledged: null,
+        persistedFields: null,
     };
     workbenchFormBuffers.set(form, buffer);
     const listeners = {
@@ -2049,18 +2050,17 @@ function reconcileWorkbenchEditorBuffer(form, selected) {
         buffer.baseline.set(name, value);
     }
     buffer.acknowledged = null;
+    buffer.persistedFields = fields;
 }
 
 function wireLoredeckWorkbenchAutosave(form, pack, selected) {
     const owner = workbenchLifetime.captureSession();
     const listeners = createWorkbenchFormListeners(form);
-    let saving = false;
     const save = () => {
-        if (saving || !listeners.active || !workbenchLifetime.isSessionCurrent(owner)) return;
-        saving = true;
+        if (!listeners.active || !workbenchLifetime.isSessionCurrent(owner)) return;
         void saveLoredeckWorkbenchEntryFields(pack, selected, form).catch(error => {
             if (workbenchLifetime.isSessionCurrent(owner)) reportWorkbenchViewError(error);
-        }).finally(() => { saving = false; });
+        });
     };
     form.querySelectorAll('input[name], textarea[name]').forEach(input => {
         listeners.listen(input, 'input', () => {
@@ -2322,7 +2322,10 @@ async function saveLoredeckWorkbenchEntryFields(pack = {}, selected = {}, form =
     if (!form || !isLoredeckWorkbenchEditablePack(pack)) return false;
     const fields = collectLoredeckWorkbenchEntryFields(form);
     const submission = captureWorkbenchEditorSubmission(form);
-    const previous = getLoredeckWorkbenchEntryFields(selected.entry);
+    const buffer = workbenchFormBuffers.get(form);
+    const previous = { ...(buffer?.persistedFields || getLoredeckWorkbenchEntryFields(selected.entry)) };
+    // Context belongs to the source entry, not this editable form's payload.
+    delete previous.context;
     const creating = options.create === true || selected.draft === true;
     if (!creating && areLoredeckWorkbenchEntryFieldsEqual(fields, previous)) {
         if (workbenchLifetime.isSessionCurrent(owner) && loredeckWorkbenchSaveState.status === 'dirty') {
@@ -2375,8 +2378,13 @@ async function saveLoredeckWorkbenchEntryFields(pack = {}, selected = {}, form =
         return false;
     }
     refreshWorkbenchPackAfterMutation(owner, pack.packId);
-    const buffer = workbenchFormBuffers.get(form);
-    if (buffer && workbenchLifetime.isSessionCurrent(owner)) buffer.acknowledged = submission;
+    if (buffer && workbenchLifetime.isSessionCurrent(owner)) {
+        // Persistence is synchronous; source reloads can overlap or be superseded.
+        // Deduplicate the committed values, never block a distinct new submission
+        // on an older reload's completion.
+        buffer.persistedFields = fields;
+        buffer.acknowledged = submission;
+    }
     if (creating && workbenchLifetime.isSessionCurrent(owner)) {
         loredeckWorkbenchDraftEntry = null;
         loredeckWorkbenchSelectedEntryId = id;

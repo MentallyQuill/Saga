@@ -129,14 +129,95 @@ async function gateSource(h, packId) {
             for (let attempt = 0; attempt < 200 && pending.length < count; attempt++) await new Promise(resolve => setTimeout(resolve, 10));
             assert.ok(pending.length >= count, `Expected ${count} pending ${packId} source request(s), got ${pending.length}`);
         },
-        async release(marker = 'Loaded source marker') {
+        async release(marker = 'Loaded source marker', index = 0) {
             assert.ok(pending.length, 'A real source request must be pending');
-            const { route, resolve } = pending.shift();
+            const [{ route, resolve }] = pending.splice(index, 1);
             await route.fulfill({ contentType: 'application/json', body: JSON.stringify([{ id: `source.${packId}`, schemaVersion: 3, title: marker, category: 'character', relevance: 'normal', content: { fact: 'Real loader source.' } }]) });
             resolve();
         },
     };
 }
+
+for (const submit of ['select', 'blur']) test(`a new ${submit} save persists immediately after a newer reload overtakes an earlier save reload`, async () => {
+    const h = await setup();
+    try {
+        const source = await gateSource(h, 'performance-custom-a');
+        await h.page.evaluate(() => {
+            const title = document.querySelector('[name="title"]');
+            title.value = 'First submitted title'; title.dispatchEvent(new Event('input')); title.dispatchEvent(new Event('blur'));
+            [...document.querySelectorAll('button')].find(node => node.textContent === 'Reload Lorecards').click();
+        });
+        await source.wait(2);
+        await source.release('Newer explicit reload', 1);
+        await h.page.waitForSelector('.saga-lore-workbench-main', { state: 'visible' });
+        const immediateWrites = await h.page.evaluate(submit => {
+            const input = document.querySelector(submit === 'select' ? '[name="relevance"]' : '[name="notes"]');
+            window.latestSubmittedInput = input;
+            input.value = submit === 'select' ? 'high' : 'Second submitted notes';
+            if (submit === 'select') {
+                input.dispatchEvent(new Event('change')); input.dispatchEvent(new Event('change'));
+            } else {
+                input.dispatchEvent(new Event('input')); input.dispatchEvent(new Event('blur'));
+                input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true }));
+                input.dispatchEvent(new Event('blur'));
+            }
+            return fixture.persistenceCalls.length;
+        }, submit);
+        assert.equal(immediateWrites, 2, 'The distinct new submission must persist before the superseded old source finishes; duplicate events must not persist it again.');
+        await source.wait(2);
+        await source.release('Latest saved reload', 1);
+        await h.page.waitForSelector('.saga-lore-workbench-main', { state: 'visible' });
+        await source.release('Superseded old save reload');
+        await h.page.waitForTimeout(40);
+        const result = await h.page.evaluate(submit => {
+            latestSubmittedInput.dispatchEvent(new Event(submit === 'select' ? 'change' : 'blur'));
+            return {
+                writes: fixture.persistenceCalls.length,
+                sameInput: document.querySelector(submit === 'select' ? '[name="relevance"]' : '[name="notes"]') === latestSubmittedInput,
+                value: latestSubmittedInput.value,
+                persisted: submit === 'select'
+                    ? fixture.persistenceCalls[1].after.entryOverrides['fixture.entry.0001'].relevance
+                    : fixture.persistenceCalls[1].after.entryOverrides['fixture.entry.0001'].content.notes,
+                save: document.querySelector('[data-loredeck-workbench-save-chip]').textContent,
+            };
+        }, submit);
+        const expected = submit === 'select' ? 'high' : 'Second submitted notes';
+        assert.deepEqual(result, { writes: 2, sameInput: true, value: expected, persisted: expected, save: 'Saved' });
+        assert.deepEqual(h.errors, []);
+    } finally { await h.stop(); }
+});
+
+test('a failed field persistence does not suppress retrying the same submitted values', async () => {
+    const h = await setup();
+    try {
+        const immediate = await h.page.evaluate(() => {
+            window.persistenceAttempts = 0;
+            panel.configureLoredeckWorkbenchPanel({ persistLoredeckLibraryRecordMutation(pack, mutator, message, options) {
+                persistenceAttempts++;
+                if (persistenceAttempts === 1) return false;
+                const before = structuredClone(fixture.registry.packs[pack.packId]);
+                const next = structuredClone(before); mutator(next);
+                fixture.packs[fixture.packs.findIndex(item => item.packId === pack.packId)] = next;
+                fixture.registry.packs[pack.packId] = next;
+                fixture.persistenceCalls.push({ packId: pack.packId, before, after: structuredClone(next), message, options });
+                return true;
+            } });
+            const title = document.querySelector('[name="title"]');
+            title.value = 'Retry submitted title'; title.dispatchEvent(new Event('input')); title.dispatchEvent(new Event('blur'));
+            const failed = document.querySelector('[data-loredeck-workbench-save-chip]').textContent;
+            title.dispatchEvent(new Event('blur')); title.dispatchEvent(new Event('blur'));
+            return { failed, attempts: persistenceAttempts, writes: fixture.persistenceCalls.length };
+        });
+        assert.deepEqual(immediate, { failed: 'Save failed', attempts: 2, writes: 1 });
+        await h.page.waitForSelector('.saga-lore-workbench-main', { state: 'visible' });
+        const result = await h.page.evaluate(() => {
+            document.querySelector('[name="title"]').dispatchEvent(new Event('blur'));
+            return { attempts: persistenceAttempts, writes: fixture.persistenceCalls.length, persisted: fixture.persistenceCalls[0].after.entryOverrides['fixture.entry.0001'].title };
+        });
+        assert.deepEqual(result, { attempts: 2, writes: 1, persisted: 'Retry submitted title' });
+        assert.deepEqual(h.errors, []);
+    } finally { await h.stop(); }
+});
 
 test('old confirmed save reloads A while B is loading without superseding B source ownership', async () => {
     const h = await setup();
