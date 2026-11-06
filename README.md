@@ -62,6 +62,7 @@ For guided walkthroughs, see [Basic Workflow](docs/user/BASIC_WORKFLOW.md) and [
 
 Release Notes:
 
+- [Saga Lorecard Context Storage Patch - November 5, 2026](docs/release/2026-11-05-lorecard-context-storage.md): fixes false `0–0` Context gates, recovers recognizable manual and Story Scan cards, and corrects Injection preview explanations.
 - [Saga Reliability Patches - October 6, 2026](docs/release/2026-10-06-reliability-patches.md): post-alpha patches for chat ownership, recoverable storage, checkpoint retries, Context safety, Story Maker resume, and bounded resources.
 - [Saga 0.4.0-alpha.4 - Scribe](docs/release/0.4.0-alpha.4.md)
 - [Saga 0.3.0-alpha.3 - Voyages](docs/release/0.3.0-alpha.3.md)

@@ -223,6 +223,7 @@ function hasCompactContextValue(contextGate = {}) {
 function compactLoreContextForStorage(contextGate = {}) {
     if (!contextGate || typeof contextGate !== 'object' || Array.isArray(contextGate)) return null;
     const compact = {
+        ...(contextGate.invalidNumericBounds === true ? { invalidNumericBounds: true } : {}),
         scope: truncateText(contextGate.scope, 60),
         anchorId: truncateText(contextGate.anchorId, 180),
         validFromAnchor: truncateText(contextGate.validFromAnchor, 180),
@@ -239,8 +240,9 @@ function compactLoreContextForStorage(contextGate = {}) {
         gameStage: truncateText(contextGate.gameStage, 180),
         stardateFrom: truncateText(contextGate.stardateFrom, 80),
         stardateTo: truncateText(contextGate.stardateTo, 80),
-        sortKeyFrom: Number.isFinite(Number(contextGate.sortKeyFrom)) ? Number(contextGate.sortKeyFrom) : null,
-        sortKeyTo: Number.isFinite(Number(contextGate.sortKeyTo)) ? Number(contextGate.sortKeyTo) : null,
+        // Context has already been normalized; coercing null here invents a zero bound.
+        sortKeyFrom: Number.isFinite(contextGate.sortKeyFrom) ? contextGate.sortKeyFrom : null,
+        sortKeyTo: Number.isFinite(contextGate.sortKeyTo) ? contextGate.sortKeyTo : null,
         precision: truncateText(contextGate.precision, 80),
         windowKind: truncateText(contextGate.windowKind, 80),
         label: truncateText(contextGate.label, 180),
@@ -259,8 +261,8 @@ function compactLoreCoordinatesForStorage(coordinates = []) {
                 label: truncateText(coordinate.label, 180),
                 from: truncateText(coordinate.from, 180),
                 to: truncateText(coordinate.to, 180),
-                sortKeyFrom: Number.isFinite(Number(coordinate.sortKeyFrom)) ? Number(coordinate.sortKeyFrom) : null,
-                sortKeyTo: Number.isFinite(Number(coordinate.sortKeyTo)) ? Number(coordinate.sortKeyTo) : null,
+                sortKeyFrom: Number.isFinite(coordinate.sortKeyFrom) ? coordinate.sortKeyFrom : null,
+                sortKeyTo: Number.isFinite(coordinate.sortKeyTo) ? coordinate.sortKeyTo : null,
                 confidence: Number.isFinite(Number(coordinate.confidence)) ? Math.max(0, Math.min(1, Number(coordinate.confidence))) : 1,
                 required: coordinate.required !== false,
             };

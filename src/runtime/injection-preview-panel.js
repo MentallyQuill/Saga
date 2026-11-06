@@ -1,4 +1,5 @@
-import { getInjectableLoreEntries, getLoreRelevanceCounts } from '../lorecards/lore-matrix.js';
+import { getInjectableLoreEntries, getLoreRelevanceCounts, normalizeLoreMatrix } from '../lorecards/lore-matrix.js';
+import { getLoreEntryInjectionContextGate } from '../lorecards/lore-injection-filter.js';
 import {
     buildContinuityPreview,
     buildLorePreview,
@@ -189,11 +190,13 @@ function getInjectionEmptyReason(kind, state, settings, enabled = true) {
     const loadedCount = getEnabledLoredeckStackPackIds(state).length;
     if (!loadedCount) return '(No Loredecks are loaded for Lore injection.)';
 
-    const acceptedCount = [
-        ...(Array.isArray(state?.acceptedLoreEntries) ? state.acceptedLoreEntries : []),
-        ...(Array.isArray(state?.loreEntries) ? state.loreEntries : []),
-    ].length;
+    const acceptedCount = normalizeLoreMatrix(state?.loreMatrix || []).length;
     if (!acceptedCount) return '(No Accepted Lorecards are available to inject.)';
+
+    const candidates = getInjectableLoreEntries(state, 0, normalizedKind);
+    if (candidates.length && candidates.every(entry => !getLoreEntryInjectionContextGate(entry, state).eligible)) {
+        return '(All Accepted Lorecards in this relevance tier are blocked by current Context.)';
+    }
 
     return '(No Accepted Lorecards match this relevance tier and current Context.)';
 }

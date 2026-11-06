@@ -55,6 +55,7 @@ import {
 } from './state-backup.js';
 import { safeJsonSize, stripRetiredStateHistoryFields } from './storage-safety.js';
 import { sanitizeLoreArraysForStorage } from './lore-storage-sanitizer.js';
+import { recoverLegacyLoreContextStorage } from './lore-context-storage-recovery.js';
 export { MAX_PENDING_LORE_ENTRIES } from './lore-storage-sanitizer.js';
 import {
     getImportedStateSchemaError,
@@ -143,6 +144,7 @@ export {
 
 const MAX_CHAT_STATE_BYTES_BEFORE_AUTO_PERSIST = 200000;
 const migratedStateRefs = new WeakSet();
+const recoveredLoreContextStateRefs = new WeakSet();
 const MOBILE_PRIMARY_PANEL_ROUTES = new Set(['loredecks', 'session', 'continuity', 'context', 'lore', 'injection', 'settings']);
 const MOBILE_BOTTOM_PANEL_ROUTES = new Set(MOBILE_PRIMARY_PANEL_ROUTES);
 
@@ -403,7 +405,7 @@ export function getState() {
     stateChatOwners.set(state, { metadata: chatMetadata, identity: getChatOperationIdentity(ctx) });
 
     const afterSize = safeJsonSize(state);
-    if (beforeSize > 0 && (afterSize < beforeSize || beforeSize > MAX_CHAT_STATE_BYTES_BEFORE_AUTO_PERSIST)) {
+    if (beforeSize > 0 && (recoveredLoreContextStateRefs.has(state) || afterSize < beforeSize || beforeSize > MAX_CHAT_STATE_BYTES_BEFORE_AUTO_PERSIST)) {
         const requested = saveState(state, { sanitize: false, syncPrompt: false });
         Promise.resolve(requested.persistence || requested).then(result => {
             if (result.status === 'failed') console.warn(`${LOG_PREFIX} Failed to persist compacted Saga state on read`, result.error);
@@ -509,6 +511,9 @@ export function migrateState(state) {
     if (!state || typeof state !== 'object') {
         return defaults;
     }
+    // Recover only raw old storage evidence, before any migration normalizes lore.
+    // Keep a marker because the required migration backup can outweigh the repair.
+    if (recoverLegacyLoreContextStorage(state)) recoveredLoreContextStateRefs.add(state);
 
     // Version 0 (no _version) → Version 1
     if (!state._version || state._version < 1) {
@@ -831,6 +836,9 @@ export function migrateState(state) {
         state._version = 27;
     }
 
+    // Schema v28: empty legacy Context artifacts were recovered before normalization.
+    if (state._version < 28) state._version = 28;
+
     // ── Always normalize lore fields post-migration ────────────────────────
     // First compact known-heavy canon DB payloads and oversized pending batches so
     // a poisoned chat can recover instead of freezing during panel render/save.
@@ -1044,8 +1052,9 @@ export function importState(json) {
             // Lore fields (schema v2)
             loreContext: normalizeLoreContext(parsed.loreContext || {}),
             contextBrief: normalizeContextBrief(parsed.contextBrief || {}, parsed.loreContext || {}),
-            loreMatrix: normalizeLoreMatrix(parsed.loreMatrix || []),
-            pendingLoreEntries: normalizeLoreMatrix(parsed.pendingLoreEntries || []),
+            // migrateState must see raw Context evidence before lore normalization.
+            loreMatrix: Array.isArray(parsed.loreMatrix) ? parsed.loreMatrix.map(entry => entry && typeof entry === 'object' ? entry : {}) : [],
+            pendingLoreEntries: Array.isArray(parsed.pendingLoreEntries) ? parsed.pendingLoreEntries.map(entry => entry && typeof entry === 'object' ? entry : {}) : [],
 
             // Lore generation lifecycle ledger (schema v3)
             loreGeneration: parsed.loreGeneration && typeof parsed.loreGeneration === 'object' && !Array.isArray(parsed.loreGeneration)
