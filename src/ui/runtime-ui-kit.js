@@ -20,6 +20,8 @@ const LORE_SCOPE_DISPLAY_ORDER = [
 
 let floatingTooltip = null;
 let tooltipAnchor = null;
+let tooltipFrame = null;
+const managedTooltips = new WeakMap();
 
 export function isPlainObjectValue(value) {
     return value && typeof value === 'object' && !Array.isArray(value);
@@ -500,25 +502,76 @@ function isMobileRuntimeTooltipSurface(el) {
 
 export function addTooltip(el, text, options = {}) {
     if (!el || !text) return el;
-    el.dataset.sagaTooltip = text;
-    el.setAttribute('aria-label', text);
-    // Native title tooltips are slow and can fight the runtime overlay tooltip.
-    el.removeAttribute('title');
-    if (shouldUseFloatingTooltip(el, options)) {
-        if (options.showOnHover !== false) {
-            el.addEventListener('mouseenter', () => showFloatingTooltip(el));
-            el.addEventListener('mouseleave', hideFloatingTooltip);
-        }
-        if (options.showOnFocus !== false) {
-            el.addEventListener('focus', () => showFloatingTooltip(el));
-            el.addEventListener('blur', hideFloatingTooltip);
-        }
-    }
+    createManagedTooltip(el, text, options);
     return el;
 }
 
+/** One registration per anchor, with explicit ownership for retained views. */
+export function createManagedTooltip(el, text, options = {}) {
+    if (managedTooltips.has(el)) {
+        const existing = managedTooltips.get(el);
+        existing.update(text);
+        return existing;
+    }
+    let disposed = false;
+    const listeners = [];
+    const listen = (type, handler) => {
+        el.addEventListener(type, handler);
+        listeners.push([type, handler]);
+    };
+    const show = () => { if (!disposed) showFloatingTooltip(el); };
+    const hide = () => { if (tooltipAnchor === el) hideFloatingTooltip(); };
+    const handle = {
+        update(next) {
+            if (disposed) return;
+            const value = String(next || '');
+            if (value) {
+                el.dataset.sagaTooltip = value;
+                el.setAttribute('aria-label', value);
+            } else {
+                delete el.dataset.sagaTooltip;
+                el.removeAttribute('aria-label');
+            }
+            // Native title tooltips can fight the runtime overlay tooltip.
+            el.removeAttribute('title');
+            if (tooltipAnchor === el) {
+                if (value && floatingTooltip) floatingTooltip.textContent = value;
+                else hideFloatingTooltip();
+            }
+        },
+        dispose() {
+            if (disposed) return;
+            disposed = true;
+            hide();
+            for (const [type, handler] of listeners) el.removeEventListener(type, handler);
+            delete el.dataset.sagaTooltip;
+            el.removeAttribute('aria-label');
+            managedTooltips.delete(el);
+        },
+    };
+    managedTooltips.set(el, handle);
+    handle.update(text);
+    if (shouldUseFloatingTooltip(el, options)) {
+        if (options.showOnHover !== false) {
+            listen('mouseenter', show);
+            listen('mouseleave', hide);
+        }
+        if (options.showOnFocus !== false) {
+            listen('focus', show);
+            listen('blur', hide);
+        }
+    }
+    return handle;
+}
+
+export function disposeRuntimeTooltips(root) {
+    if (!root) return;
+    managedTooltips.get(root)?.dispose();
+    for (const element of root.querySelectorAll('[data-saga-tooltip]')) managedTooltips.get(element)?.dispose();
+}
+
 function showFloatingTooltip(anchor) {
-    if (isMobileRuntimeTooltipSurface(anchor)) {
+    if (!anchor.isConnected || !managedTooltips.has(anchor) || isMobileRuntimeTooltipSurface(anchor)) {
         hideFloatingTooltip();
         return;
     }
@@ -532,11 +585,19 @@ function showFloatingTooltip(anchor) {
     }
     floatingTooltip.textContent = text;
     floatingTooltip.style.display = 'block';
-    requestAnimationFrame(() => positionFloatingTooltip(anchor));
+    if (tooltipFrame !== null) cancelAnimationFrame(tooltipFrame);
+    tooltipFrame = requestAnimationFrame(() => {
+        tooltipFrame = null;
+        positionFloatingTooltip(anchor);
+    });
 }
 
 function positionFloatingTooltip(anchor) {
-    if (!floatingTooltip || !anchor) return;
+    if (!floatingTooltip || tooltipAnchor !== anchor) return;
+    if (!anchor.isConnected || !managedTooltips.has(anchor)) {
+        hideFloatingTooltip();
+        return;
+    }
     const rect = anchor.getBoundingClientRect();
     const tipRect = floatingTooltip.getBoundingClientRect();
     const margin = 8;
@@ -555,6 +616,8 @@ function positionFloatingTooltip(anchor) {
 }
 
 export function hideFloatingTooltip() {
+    if (tooltipFrame !== null) cancelAnimationFrame(tooltipFrame);
+    tooltipFrame = null;
     tooltipAnchor = null;
     if (floatingTooltip) floatingTooltip.style.display = 'none';
 }

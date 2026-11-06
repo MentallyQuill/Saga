@@ -1,2 +1,8 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Generated output is byte-compared after a clean checkout on every platform.
+/src/loredecks/generated/loredeck-cover-thumbnails.js text eol=lf
+/src/ui/generated/workbench/*.js text eol=lf
+/src/ui/generated/workbench/LICENSE.txt text eol=lf
+/assets/generated/loredeck-covers/*.webp binary

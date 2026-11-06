@@ -2,6 +2,11 @@
   "name": "saga-development",
   "private": true,
   "engines": { "node": ">=24.16.0 <25" },
+  "scripts": {
+    "build:ui": "vite build --config vite.saga-ui.config.mjs",
+    "build:thumbnails": "node tools/scripts/build-loredeck-thumbnails.mjs",
+    "check:generated": "node tools/scripts/check-saga-ui-generated.mjs"
+  },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "7.3.1",
     "playwright": "1.65.0",
