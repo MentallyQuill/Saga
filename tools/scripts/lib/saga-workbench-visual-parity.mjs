@@ -5,6 +5,7 @@ import path from 'node:path';
 import sharp from 'sharp';
 import { startSagaPerformanceHarness } from './saga-performance-harness.mjs';
 import { workbenchVisualStates, creatorVisualStates, task1VisualStates } from '../../../tests/browser/workbench-visual-scenarios.mjs';
+import { paintedGeometry, verifyImagePairs, compareVisualPixels } from './saga-cover-visual-evidence.mjs';
 
 const baselineRoot = process.env.SAGA_PARITY_BASELINE_ROOT;
 const output = process.env.SAGA_PARITY_VISUAL_OUTPUT;
@@ -22,6 +23,7 @@ const profiles = [{ id: 'desktop', viewport: { width: 1440, height: 900 }, devic
     { id: 'phone', viewport: { width: 430, height: 820 }, deviceScaleFactor: 3 }];
 const states = process.env.SAGA_PARITY_VISUAL_STATES?.split(',') || [...workbenchVisualStates, ...creatorVisualStates, ...task1VisualStates];
 const selectedProfiles = profiles.filter(profile => !process.env.SAGA_PARITY_VISUAL_PROFILES || process.env.SAGA_PARITY_VISUAL_PROFILES.split(',').includes(profile.id));
+const binaryHashes = new Map();
 for (const profile of selectedProfiles) for (const theme of ['default', 'custom']) for (const state of states) {
     const capture = { id: `${profile.id}-${theme}-${state}`, profile, theme, state, sides: {} };
     try {
@@ -40,24 +42,41 @@ for (const profile of selectedProfiles) for (const theme of ['default', 'custom'
                 const prefix = path.join(output, `${capture.id}-${side}`);
                 const png = await h.page.screenshot({ path: `${prefix}.png`, fullPage: true, caret: 'hide' });
                 await writeFile(`${prefix}.json`, JSON.stringify(geometry, null, 2));
-                capture.sides[side] = { prepared, browser: h.browserVersion, executablePath: h.executablePath, screenshot: `${prefix}.png`, screenshotHash: hash(png), geometryHash: hash(JSON.stringify(geometry)), errors: h.errors };
+                if (!binaryHashes.has(h.executablePath)) binaryHashes.set(h.executablePath, hash(await readFile(h.executablePath)));
+                const paneScroll = state.startsWith('library-') ? await h.page.evaluate(async () => (await import('/__performance/workbench-visual-scenarios.mjs')).inspectDeferredLibraryImages()) : null;
+                capture.sides[side] = { prepared, browser: h.browserVersion, executablePath: h.executablePath, binaryHash: binaryHashes.get(h.executablePath), screenshot: `${prefix}.png`, screenshotHash: hash(png), geometryHash: hash(JSON.stringify(paintedGeometry(geometry))), paneScroll, errors: h.errors };
                 assert.deepEqual(h.errors, [], `${capture.id} ${side} page errors`);
             } finally { unblock?.(); await h.stop(); }
         }
         const baseline = await sharp(capture.sides.baseline.screenshot).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
         const candidate = await sharp(capture.sides.candidate.screenshot).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
         assert.deepEqual(candidate.info, baseline.info);
-        let changedPixels = 0, maxChannelDelta = 0;
-        const diff = Buffer.alloc(baseline.data.length);
-        for (let i = 0; i < baseline.data.length; i += 4) {
-            let changed = false;
-            for (let c = 0; c < 3; c++) { const delta = Math.abs(candidate.data[i + c] - baseline.data[i + c]); maxChannelDelta = Math.max(maxChannelDelta, delta); changed ||= delta > 0; diff[i + c] = delta; }
-            if (changed) changedPixels++; diff[i + 3] = 255;
+        const before = JSON.parse(await readFile(path.join(output, `${capture.id}-baseline.json`))), after = JSON.parse(await readFile(path.join(output, `${capture.id}-candidate.json`)));
+        const images = await verifyImagePairs(before, after, { baselineRoot, candidateRoot: process.cwd(), dpr: profile.deviceScaleFactor });
+        const { diff, ...comparison } = compareVisualPixels(baseline.data, candidate.data, baseline.info, images, profile.deviceScaleFactor);
+        await writeFile(path.join(output, `${capture.id}-image-evidence.json`), JSON.stringify(images, null, 2));
+        capture.comparison = { ...comparison, geometryEqual: capture.sides.baseline.geometryHash === capture.sides.candidate.geometryHash };
+        if (comparison.changedPixels) await sharp(diff, { raw: baseline.info }).png().toFile(path.join(output, `${capture.id}-difference.png`));
+        if (state.startsWith('library-')) {
+            const a = capture.sides.baseline.paneScroll, b = capture.sides.candidate.paneScroll;
+            assert.equal(b.available, a.available);
+            if (a.available) {
+                assert.deepEqual(b.before, a.before, 'Original Library pane scroll geometry before deferred images');
+                assert.deepEqual(b.after, a.after, 'Library scroll/overflow unchanged after actual pane scrolling');
+                assert.ok(a.after.top > 0 && a.images.length > 0 && b.images.length === a.images.length, 'Real pane scroll reveals deferred covers');
+                for (const side of [a, b]) assert.ok(side.images.every(image => image.complete && image.naturalWidth > 0), 'Deferred visible covers decode after actual pane scroll');
+                assert.deepEqual(b.images.map(image => image.rect), a.images.map(image => image.rect), 'Revealed deferred cover geometry');
+            }
         }
-        capture.comparison = { changedPixels, maxChannelDelta, geometryEqual: capture.sides.baseline.geometryHash === capture.sides.candidate.geometryHash };
-        if (changedPixels) await sharp(diff, { raw: baseline.info }).png().toFile(path.join(output, `${capture.id}-difference.png`));
-        console.log(`${capture.id}: ${changedPixels} changed pixels, geometry ${capture.comparison.geometryEqual ? 'equal' : 'DIFF'}`);
+        console.log(`${capture.id}: ${comparison.changedPixels} changed pixels (${comparison.unexplainedPixels} unexplained), geometry ${capture.comparison.geometryEqual ? 'equal' : 'DIFF'}`);
     } catch (error) { capture.error = error.stack; console.error(`${capture.id}: ${error.message}`); }
     report.captures.push(capture); await writeFile(path.join(output, 'index.json'), JSON.stringify(report, null, 2));
 }
-assert.ok(report.captures.every(capture => !capture.error && capture.comparison.changedPixels === 0 && capture.comparison.geometryEqual), 'Paired parity requires exact geometry and zero unexplained pixels; inspect differences, never blanket-threshold them');
+report.finalSourceHashes = { baseline: await sourceHash(baselineRoot), candidate: await sourceHash(process.cwd()) };
+report.finalFixtureHash = hash(await readFile('tests/browser/performance-fixtures.mjs'));
+report.finalScenarioHash = hash(await readFile('tests/browser/workbench-visual-scenarios.mjs'));
+await writeFile(path.join(output, 'index.json'), JSON.stringify(report, null, 2));
+assert.deepEqual(report.finalSourceHashes, report.sourceHashes, 'Source stayed unchanged through the complete matrix');
+assert.equal(report.finalFixtureHash, report.fixtureHash); assert.equal(report.finalScenarioHash, report.scenarioHash);
+assert.equal(report.captures.length, states.length * selectedProfiles.length * 2);
+assert.ok(report.captures.every(capture => !capture.error && capture.comparison.unexplainedPixels === 0 && capture.comparison.geometryEqual), 'Paired parity requires exact painted geometry/non-image pixels and only verified derivative content attribution');

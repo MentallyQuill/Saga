@@ -5,7 +5,7 @@ export const task1VisualStates = ['workbench-100', 'workbench-500', 'workbench-6
 
 export async function prepareVisualScenario({ state, theme }) {
     const { installSagaPerformanceFixture } = await import('/__performance/performance-fixtures.mjs');
-    const { getSettings, upsertThemeIconSetLibraryPack, getLoredeckLibraryRegistry, upsertLoredeckLibraryPack } = await import('/src/state/state-manager.js');
+    const { getSettings, saveSettings, upsertThemeIconSetLibraryPack, getLoredeckLibraryRegistry, upsertLoredeckLibraryPack } = await import('/src/state/state-manager.js');
     const { applyRuntimeTheme, writeThemeColorsToSettings, getActiveThemeColors } = await import('/src/theme/runtime-theme.js');
     const settings = getSettings();
     if (theme === 'custom') {
@@ -14,9 +14,11 @@ export async function prepareVisualScenario({ state, theme }) {
         const iconSeed = upsertThemeIconSetLibraryPack({ id: 'parity-custom-icons', type: 'custom', title: 'Parity Custom Icons',
             icons: { 'tab.loredecks': 'assets/iconsets/saga-mystic/mystic-tab-loredecks-256.png', 'tab.settings': 'assets/iconsets/saga-relay/relay-tab-settings-256.png' } });
         if (iconSeed?.ok !== true) throw new Error(`Public custom icon seed failed: ${JSON.stringify(iconSeed)}`);
-        settings.themeIconSetId = 'parity-custom-icons';
+        // Public store writes replace the settings object. Publish both the
+        // colors and selected imported icon set through that same public owner.
+        saveSettings({ ...getSettings(), ...settings, themeIconSetLibrary: iconSeed.library, themeIconSetId: 'parity-custom-icons' });
     }
-    applyRuntimeTheme(document.documentElement, settings);
+    applyRuntimeTheme(document.documentElement, getSettings());
     const library = state.startsWith('library-');
     const fixture = await installSagaPerformanceFixture({ entryCount: state.startsWith('workbench-') ? Number(state.split('-')[1]) : state === 'empty' ? 0 : library ? 100 : 12,
         library, deckCount: library ? Number(state.split('-')[1]) : 77,
@@ -26,7 +28,7 @@ export async function prepareVisualScenario({ state, theme }) {
     const wait = async predicate => { for (let i = 0; i < 300; i++) { if (predicate()) return; await new Promise(resolve => setTimeout(resolve, 10)); } throw new Error(`Visual preparation timed out: ${state}`); };
     if (state === 'runtime-icons') {
         const runtime = await import('/src/runtime/lore-panel.js'); runtime.showLorePanel();
-        const iconSources = Array.from(document.querySelectorAll('#saga-lore-panel .saga-runtime-rail-tab img')).map(image => image.src);
+        const iconSources = Array.from(document.querySelectorAll('#saga-lore-panel img')).map(image => image.src);
         if (theme === 'custom' && !iconSources.some(src => src.includes('mystic-tab-loredecks-256.png'))) throw new Error('Public custom icon set did not reach the rendered runtime rail');
         return { root: '#saga-lore-panel', state, theme, iconSources };
     }
@@ -116,10 +118,40 @@ export function captureVisualGeometry(rootSelector) {
         return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
     }).map(node => {
         const rect = node.getBoundingClientRect(), style = getComputedStyle(node);
+        let image;
+        if (node.tagName === 'IMG') {
+            const clip = { left: Math.max(0, rect.left), top: Math.max(0, rect.top), right: Math.min(innerWidth, rect.right), bottom: Math.min(innerHeight, rect.bottom) };
+            for (let parent = node.parentElement; parent; parent = parent.parentElement) {
+                const bounds = parent.getBoundingClientRect(), css = getComputedStyle(parent);
+                if (css.overflowX !== 'visible') { clip.left = Math.max(clip.left, bounds.left); clip.right = Math.min(clip.right, bounds.right); }
+                if (css.overflowY !== 'visible') { clip.top = Math.max(clip.top, bounds.top); clip.bottom = Math.min(clip.bottom, bounds.bottom); }
+            }
+            image = { src: node.src, currentSrc: node.currentSrc, complete: node.complete, naturalWidth: node.naturalWidth, naturalHeight: node.naturalHeight,
+                clip, alt: node.alt, inlineAspectRatio: node.style.aspectRatio, inlineMinWidth: node.style.minWidth };
+        }
         return { tag: node.tagName, classes: Array.from(node.classList).sort(), name: node.name || '',
             text: node.children.length ? '' : node.textContent.replace(/\s+/g, ' ').trim(), value: node.value,
             disabled: node.disabled, checked: node.getAttribute('aria-checked'), open: node.open,
             rect: [rect.x, rect.y, rect.width, rect.height], scroll: [node.scrollTop, node.scrollLeft, node.scrollWidth, node.scrollHeight],
-            styles: Object.fromEntries(properties.map(key => [key, style[key]])) };
+            styles: Object.fromEntries(properties.map(key => [key, style[key]])), image };
     });
+}
+
+export async function inspectDeferredLibraryImages() {
+    const pane = Array.from(document.querySelectorAll('.saga-loredeck-library-hierarchy-list, .saga-loredeck-library-mobile-body'))
+        .find(node => node.scrollHeight > node.clientHeight && /auto|scroll/.test(getComputedStyle(node).overflowY));
+    if (!pane || pane.scrollHeight <= pane.clientHeight) return { available: false };
+    const before = { top: pane.scrollTop, width: pane.scrollWidth, height: pane.scrollHeight, clientWidth: pane.clientWidth, clientHeight: pane.clientHeight,
+        overflow: [getComputedStyle(pane).overflowX, getComputedStyle(pane).overflowY], rect: pane.getBoundingClientRect().toJSON() };
+    pane.scrollTop = Math.min(pane.scrollHeight - pane.clientHeight, pane.clientHeight * 3);
+    await stabilizeVisual();
+    const bounds = pane.getBoundingClientRect();
+    const images = Array.from(pane.querySelectorAll('img')).filter(image => {
+        const rect = image.getBoundingClientRect(); return rect.bottom > bounds.top && rect.top < bounds.bottom;
+    }).map(image => ({ src: image.src, currentSrc: image.currentSrc, complete: image.complete, naturalWidth: image.naturalWidth, naturalHeight: image.naturalHeight,
+        rect: image.getBoundingClientRect().toJSON() }));
+    const after = { top: pane.scrollTop, width: pane.scrollWidth, height: pane.scrollHeight, clientWidth: pane.clientWidth, clientHeight: pane.clientHeight,
+        overflow: [getComputedStyle(pane).overflowX, getComputedStyle(pane).overflowY], rect: pane.getBoundingClientRect().toJSON() };
+    pane.scrollTop = before.top;
+    return { available: true, before, after, images };
 }
