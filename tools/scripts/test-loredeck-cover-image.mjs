@@ -100,8 +100,8 @@ class FakeImage extends EventTarget {
 
 // Node lacks layout and observer APIs. These doubles deliver real browser
 // notifications; all decisions about when/what to load remain in production.
-function installPlatform() {
-  const names = ['window', 'document', 'ResizeObserver', 'MutationObserver', 'getComputedStyle', 'requestAnimationFrame', 'cancelAnimationFrame'];
+function installPlatform({ cssSupport = 'supported' } = {}) {
+  const names = ['window', 'document', 'ResizeObserver', 'MutationObserver', 'getComputedStyle', 'requestAnimationFrame', 'cancelAnimationFrame', 'CSS'];
   const previous = new Map(names.map(name => [name, Object.getOwnPropertyDescriptor(globalThis, name)]));
   const resizeObservers = new Set();
   const mutationObservers = new Set();
@@ -137,6 +137,10 @@ function installPlatform() {
     requestAnimationFrame: callback => setTimeout(() => callback(performance.now()), 0),
     cancelAnimationFrame: clearTimeout,
   });
+  if (cssSupport === 'missing-css') delete globalThis.CSS;
+  else globalThis.CSS = cssSupport === 'missing-supports' ? {} : {
+    supports: (property, value) => cssSupport === 'supported' && property === 'aspect-ratio' && value === '1 / 1',
+  };
   const settle = async () => { await new Promise(resolve => setTimeout(resolve, 5)); };
   return {
     element(width = 0, height = 0) {
@@ -392,6 +396,65 @@ test('portrait density uses the actual overflowing image box while retaining the
   } finally { platform.restore(); }
 });
 
+for (const cssSupport of ['unsupported', 'missing-css', 'missing-supports']) {
+  test(`list uses original only and preserves baseline styles when aspect-ratio capability is ${cssSupport}`, async () => {
+    const platform = installPlatform({ cssSupport });
+    try {
+      const { bindLoredeckCoverImage } = await loadCoverModule();
+      const visual = platform.element();
+      const img = new FakeImage(visual);
+      Object.assign(img.style, { aspectRatio: 'auto', minWidth: '7px' });
+      let fallbacks = 0;
+      const value = pack('portrait', { fit: 'contain' });
+      const serialized = JSON.stringify(value);
+      const dispose = bindLoredeckCoverImage(visual, img, value, { usage: 'list', onOriginalError() { fallbacks++; } });
+      assert.equal(img.src, '');
+      await platform.resize(visual, 0, 0);
+      assert.equal(img.src, '', 'capability fallback still waits for nonzero layout');
+      await platform.resize(visual, 48, 48);
+      assert.equal(img.src, original(), 'unsupported ratio preservation must never request a rounded derivative');
+      assertHintsBeforeSource(img, 'lazy');
+      assert.deepEqual(img.style, { aspectRatio: 'auto', minWidth: '7px' });
+      await platform.resize(visual, 30, 30);
+      await platform.dpr(3);
+      assert.deepEqual(img.history.filter(([name]) => name === 'src'), [['src', original()]]);
+      img.error(); img.error();
+      assert.equal(fallbacks, 1);
+      assert.equal(platform.observedCount(), 0);
+      dispose(); dispose();
+      assert.equal(JSON.stringify(value), serialized);
+    } finally { platform.restore(); }
+  });
+}
+
+test('rebinding the same image releases owned intrinsic styles before an original-only cover binding', async () => {
+  const platform = installPlatform();
+  try {
+    const { bindLoredeckCoverImage } = await loadCoverModule();
+    const visual = platform.element();
+    const img = new FakeImage(visual);
+    Object.assign(img.style, { aspectRatio: 'auto', minWidth: '7px' });
+    let oldFallbacks = 0;
+    let newFallbacks = 0;
+    const first = bindLoredeckCoverImage(visual, img, pack(), { usage: 'list', onOriginalError() { oldFallbacks++; } });
+    await platform.resize(visual, 48, 48);
+    assert.equal(img.src, derivative());
+    assert.equal(img.style.aspectRatio, '640 / 1280');
+    globalThis.CSS = { supports: () => false };
+    const second = bindLoredeckCoverImage(visual, img, pack('landscape'), { usage: 'list', onOriginalError() { newFallbacks++; } });
+    assert.deepEqual(img.style, { aspectRatio: 'auto', minWidth: '7px' }, 'the prior binding cannot contaminate a fallback source');
+    first();
+    await platform.resize(visual, 48, 48);
+    assert.equal(img.src, original('landscape'));
+    img.error(); img.error();
+    assert.equal(oldFallbacks, 0);
+    assert.equal(newFallbacks, 1);
+    assert.deepEqual(img.style, { aspectRatio: 'auto', minWidth: '7px' });
+    second(); second();
+    assert.equal(platform.observedCount(), 0);
+  } finally { platform.restore(); }
+});
+
 if (process.argv.includes('--generated')) test('shipping derivatives reproduce byte-for-byte and decode losslessly at the recorded aspect and dimensions', async () => {
   const { createHash } = await import('node:crypto');
   const { mkdtemp, readdir, rm } = await import('node:fs/promises');
@@ -564,8 +627,65 @@ if (process.argv.includes('--browser')) test('real image-backed covers preserve 
     await errorPage.waitForSelector('#task3-missing-original.saga-loredeck-library-visual-fallback .saga-loredeck-library-visual-fallback-text');
     assert.equal(await errorPage.locator('#task3-missing-original .saga-loredeck-library-cover-actions').count(), 1, 'cover actions survive terminal fallback');
     await errorContext.close();
+    const legacyContext = await browser.newContext({ viewport: { width: 430, height: 820 }, deviceScaleFactor: 3 });
+    const legacyPage = await legacyContext.newPage();
+    legacyPage.on('pageerror', error => errors.push(error.message));
+    await legacyPage.addInitScript(() => {
+      const supports = CSS.supports.bind(CSS);
+      CSS.supports = (...args) => args[0] === 'aspect-ratio' ? false : supports(...args);
+    });
+    const legacyDerivativeRequests = [];
+    await legacyPage.route('**/assets/generated/loredeck-covers/*.webp', route => {
+      legacyDerivativeRequests.push(route.request().url());
+      return route.abort();
+    });
+    await legacyPage.goto(`${server.origin}/tests/browser/visual-smoke.html`);
+    await legacyPage.waitForFunction(() => window.__sagaSmokeReady === true);
+    const legacyBeforeLayout = await legacyPage.evaluate(async () => {
+      const { createLoredeckDeckVisual } = await import('/src/loredecks/loredeck-library-panel.js');
+      const pack = { packId: 'legacy-portrait', type: 'custom', title: 'Legacy portrait', assets: { cover: { path: 'content/loredecks/one-piece-arlong-park/assets/cover.jpg', fit: 'contain' } } };
+      let deferred = false;
+      for (const [index, usage] of ['detail', 'list'].entries()) {
+        const visual = createLoredeckDeckVisual(pack, 'saga-loredeck-library-monogram', { usage });
+        visual.id = `task3-legacy-${usage}`;
+        Object.assign(visual.style, { position: 'fixed', top: '0', left: `${index * 60}px`, zIndex: '1000001', width: '42px', height: '42px' });
+        if (usage === 'list') deferred = visual.firstChild.getAttribute('src') === null;
+        document.body.appendChild(visual);
+      }
+      return deferred;
+    });
+    assert.equal(legacyBeforeLayout, true);
+    await legacyPage.waitForFunction(() => ['detail', 'list'].every(usage => {
+      const img = document.querySelector(`#task3-legacy-${usage} img`);
+      return img?.complete && img.naturalWidth > 0;
+    }));
+    const legacyImages = await legacyPage.evaluate(() => ['detail', 'list'].map(usage => {
+      const img = document.querySelector(`#task3-legacy-${usage} img`);
+      const box = img.getBoundingClientRect();
+      return { usage, src: img.src, width: box.width, height: box.height, ratioStyle: img.style.aspectRatio, minWidthStyle: img.style.minWidth, loading: img.loading, decoding: img.decoding };
+    }));
+    assert.equal(legacyImages[1].src, `${server.origin}/content/loredecks/one-piece-arlong-park/assets/cover.jpg`);
+    assert.equal(legacyImages[1].width, legacyImages[0].width);
+    assert.equal(legacyImages[1].height, legacyImages[0].height);
+    assert.equal(legacyImages[1].ratioStyle, '');
+    assert.equal(legacyImages[1].minWidthStyle, '');
+    assert.equal(legacyImages[1].loading, 'lazy');
+    assert.equal(legacyImages[1].decoding, 'async');
+    await legacyPage.route('**/content/loredecks/one-piece-drum-island/assets/cover.jpg', route => route.abort());
+    await legacyPage.evaluate(async () => {
+      const { createLoredeckDeckVisual } = await import('/src/loredecks/loredeck-library-panel.js');
+      const visual = createLoredeckDeckVisual({ packId: 'legacy-error', type: 'custom', title: 'Legacy error', assets: { cover: { path: 'content/loredecks/one-piece-drum-island/assets/cover.jpg' } } }, 'saga-loredeck-library-monogram', { usage: 'list', editableCover: true });
+      visual.id = 'task3-legacy-error';
+      Object.assign(visual.style, { position: 'fixed', top: '60px', left: '0', zIndex: '1000001', width: '42px', height: '42px' });
+      document.body.appendChild(visual);
+    });
+    await legacyPage.waitForSelector('#task3-legacy-error.saga-loredeck-library-visual-fallback .saga-loredeck-library-visual-fallback-text');
+    assert.equal(await legacyPage.locator('#task3-legacy-error .saga-loredeck-library-cover-actions').count(), 1);
+    assert.deepEqual(legacyDerivativeRequests, [], 'unsupported capability makes no derivative requests, including error fallback');
+    await legacyContext.close();
     assert.deepEqual(errors, []);
-    await writeFile(new URL('evidence.json', output), JSON.stringify({ browser: await browser.version(), viewport: { width: 430, height: 820 }, dpr: 3, decodedImages: 140, images, missingDerivativeRequests: failed, errors }, null, 2));
+    await writeFile(new URL('evidence.json', output), JSON.stringify({ browser: await browser.version(), viewport: { width: 430, height: 820 }, dpr: 3, decodedImages: 140, images, missingDerivativeRequests: failed, legacyCapabilitySimulation: { images: legacyImages, derivativeRequests: legacyDerivativeRequests, errorFallbackActions: true }, errors }, null, 2));
     console.log('Image-backed Edge check: all70 paired original/list covers decoded at phone DPR3; hints, sharpness, geometry, crop/focal/alt, and two-stage failure/action restoration verified.');
+    console.log('Unsupported aspect-ratio simulation in Edge: original-only list matches baseline portrait geometry/styles, lazy/async/nonzero deferral retained, no derivative request, original error restores monogram/actions. This is not an actual old-engine run.');
   } finally { await browser?.close(); await server.stop(); }
 });

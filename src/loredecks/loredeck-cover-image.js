@@ -75,7 +75,16 @@ export function bindLoredeckCoverImage(visual, img, pack, options = {}) {
     const cover = getLoredeckAssetRef(pack);
     const originalSrc = getAssetSrc(cover);
     const intrinsic = intrinsicSizeByOriginalSrc.get(originalSrc);
-    if (usage === 'list' && intrinsic) {
+    const canPreserveIntrinsicRatio = usage === 'list' && intrinsic?.width > 0 && intrinsic?.height > 0
+        && globalThis.CSS?.supports?.('aspect-ratio', '1 / 1') === true;
+    let restoreIntrinsicStyles = () => {};
+    if (canPreserveIntrinsicRatio) {
+        const previousRatio = img.style.aspectRatio;
+        const previousMinWidth = img.style.minWidth;
+        restoreIntrinsicStyles = () => {
+            img.style.aspectRatio = previousRatio;
+            img.style.minWidth = previousMinWidth;
+        };
         // Grid images can overflow their clipped container along the intrinsic
         // axis. Retain the original ratio even when thumbnail rounding differs,
         // preserving that existing crop rather than changing the shared CSS.
@@ -98,6 +107,7 @@ export function bindLoredeckCoverImage(visual, img, pack, options = {}) {
         img.removeEventListener('error', onError);
         stopSize();
         stopDisconnect();
+        restoreIntrinsicStyles();
     }
 
     function onError() {
@@ -120,7 +130,11 @@ export function bindLoredeckCoverImage(visual, img, pack, options = {}) {
         const candidates = variantsByOriginalSrc.get(originalSrc);
         const current = candidates?.find(variant => variant.src === source);
         if (current && coversBox(current, { width, height }, dpr, cover?.fit)) return;
-        const next = getLoredeckCoverSources(pack, { usage, box: { width, height }, dpr }).src;
+        // Older engines cannot retain the original intrinsic grid crop while
+        // using rounded thumbnail dimensions. Keep their original image/styles.
+        const next = canPreserveIntrinsicRatio
+            ? getLoredeckCoverSources(pack, { usage, box: { width, height }, dpr }).src
+            : originalSrc;
         if (!next || source === next) return;
         source = next;
         usingDerivative = next !== originalSrc;
