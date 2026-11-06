@@ -52,6 +52,8 @@ test('compiled adapter retains keyed rows and leaf inputs, updates current snaps
       const { mount } = await import('/src/ui/generated/workbench/view.js');
       const { createLoredeckWorkbenchViewModel: project } = await import('/src/loredecks/loredeck-workbench-view-model.js');
       const { createManagedTooltip } = await import('/src/ui/runtime-ui-kit.js');
+      const unhandledRejections = [];
+      window.addEventListener('unhandledrejection', event => unhandledRejections.push(String(event.reason)));
       const rows = Array.from({ length: 502 }, (_, i) => ({ id: `entry-${i}`, entry: { title: `Title ${i}` }, disabled: i === 2 }));
       rows.unshift({ id: 'draft', draft: true, entry: { title: 'Draft' } });
       let input = {
@@ -136,15 +138,35 @@ test('compiled adapter retains keyed rows and leaf inputs, updates current snaps
       failureHost.querySelectorAll('[role=checkbox]')[0].click();
       await Promise.resolve(); await Promise.resolve();
       bad.dispose();
+      const mountThrows = [];
       const failedHost = document.createElement('div'); document.body.append(failedHost);
-      const failed = mount(failedHost, snapshot, { ...actions, mountDetail() { throw new Error('render leaf'); } });
-      failed.dispose();
+      try { mount(failedHost, snapshot, { ...actions, mountDetail() { throw new Error('render leaf'); } }); }
+      catch (error) { mountThrows.push(error.message); }
       await Promise.resolve(); await Promise.resolve();
       const failureCleanup = counts.disconnectedCleanup;
       const tooltipFailureHost = document.createElement('div'); document.body.append(tooltipFailureHost);
-      const tooltipFailure = mount(tooltipFailureHost, snapshot, { ...actions, tooltip() { throw new Error('tooltip action'); } });
-      tooltipFailure.dispose();
+      try { mount(tooltipFailureHost, snapshot, { ...actions, tooltip() { throw new Error('tooltip action'); } }); }
+      catch (error) { mountThrows.push(error.message); }
       const tooltipFailureCleanup = counts.disconnectedCleanup;
+      const renderHost = document.createElement('div'); document.body.append(renderHost);
+      const render = mount(renderHost, snapshot, actions);
+      const beforeRenderFailure = counts.disposed;
+      const failingRows = snapshot.displayRows.map((row, index) => index !== 1 ? row : {
+        ...row, cells: [{ text: { toString() { throw new Error('ordinary render failure'); } } }, ...row.cells.slice(1)],
+      });
+      render.update({ ...snapshot, displayRows: failingRows });
+      render.dispose(); render.dispose();
+      render.update(snapshot);
+      const renderCleanup = { disposed: counts.disposed - beforeRenderFailure, disconnected: counts.disconnectedCleanup, children: renderHost.children.length };
+      const initialRenderHost = document.createElement('div'); document.body.append(initialRenderHost);
+      const initialRows = snapshot.displayRows.map((row, index) => index !== 1 ? row : {
+        ...row, cells: [{ text: { toString() { throw new Error('initial row failure'); } } }, ...row.cells.slice(1)],
+      });
+      try { mount(initialRenderHost, { ...snapshot, displayRows: initialRows }, actions); }
+      catch (error) { mountThrows.push(error.message); }
+      const initialRenderChildren = initialRenderHost.children.length;
+      const recovered = mount(initialRenderHost, snapshot, actions); recovered.dispose();
+      await new Promise(resolve => requestAnimationFrame(resolve));
       const loadingHost = document.createElement('div'); document.body.append(loadingHost);
       const loading = mount(loadingHost, { ...snapshot, cacheStatus: 'loading' }, actions);
       const loadingText = loadingHost.querySelector('.saga-lore-empty')?.textContent;
@@ -173,7 +195,7 @@ test('compiled adapter retains keyed rows and leaf inputs, updates current snaps
       const deckReplaced = oldControls !== ownerHost.querySelector('input') && oldDetail !== ownerHost.querySelector('textarea');
       owner.update({ ...snapshot, cacheStatus: 'loading' });
       owner.dispose();
-      return { initial, hierarchy, queryRetained, statusRetained, menuRetained, rowsRetained, checked, selected, detailRemounted, mountsBeforeDispose, disposed, errors, loadingText, errorText, emptyText, tooltipShown, tooltipHidden, failureCleanup, tooltipFailureCleanup, allCleanupConnected: counts.disconnectedCleanup === 0, draftReplaced, draftStatusRetained, readonly, deckReplaced, failedChildren: failedHost.children.length };
+      return { initial, hierarchy, queryRetained, statusRetained, menuRetained, rowsRetained, checked, selected, detailRemounted, mountsBeforeDispose, disposed, errors, unhandledRejections, mountThrows, initialRenderChildren, loadingText, errorText, emptyText, tooltipShown, tooltipHidden, failureCleanup, tooltipFailureCleanup, renderCleanup, allCleanupConnected: counts.disconnectedCleanup === 0, draftReplaced, draftStatusRetained, readonly, deckReplaced, failedChildren: failedHost.children.length };
     });
     assert.equal(result.initial.rowCount, 500);
     assert.deepEqual(result.initial.childClasses, [
@@ -191,11 +213,15 @@ test('compiled adapter retains keyed rows and leaf inputs, updates current snaps
     assert.equal(result.tooltipHidden, true, 'row tooltip cleanup must hide the active tooltip before the next frame');
     assert.equal(result.failureCleanup, 0, 'failed factory mount rolls back connected sibling leaves');
     assert.equal(result.tooltipFailureCleanup, 0, 'failed tooltip mount rolls back connected sibling leaves');
-    assert.deepEqual(result.errors.sort(), ['async action', 'render leaf', 'sync action', 'tooltip action']);
+    assert.deepEqual(result.renderCleanup, { disposed: 4, disconnected: 0, children: 0 }, 'ordinary row rendering failure must clean all leaves before removing their hosts');
+    assert.deepEqual(result.mountThrows, ['render leaf', 'tooltip action', 'initial row failure']);
+    assert.equal(result.initialRenderChildren, 0);
+    assert.deepEqual(result.errors.sort(), ['async action', 'initial row failure', 'ordinary render failure', 'render leaf', 'sync action', 'tooltip action']);
     assert.equal(result.failedChildren, 0);
     assert.equal(result.loadingText, 'Loading Lorecards...');
     assert.equal(result.errorText, 'Could not load');
     assert.equal(result.emptyText, 'No Lorecards match the current filters.');
     assert.deepEqual(pageErrors, []);
+    assert.deepEqual(result.unhandledRejections, []);
   } finally { await browser?.close(); await server.stop(); }
 });

@@ -7,8 +7,8 @@ export function mount(target, snapshot, actions) {
     let disposed = false;
     const leaves = new Set();
     const bridge = { get snapshot() { return current; } };
-    // Boundaries do not catch event handlers or rejected promises. Keep those
-    // paths separate so each failure is delivered exactly once.
+    // Event handlers and rejected promises are separate from synchronous render
+    // work so each failure is delivered exactly once.
     const invoke = callback => {
         try {
             const result = callback();
@@ -28,7 +28,7 @@ export function mount(target, snapshot, actions) {
             let leaf;
             try { leaf = actions[name](node, model); }
             catch (error) {
-                // Roll back already-mounted siblings before the boundary removes DOM.
+                // Roll back already-mounted siblings before unmount removes DOM.
                 disposeLeaves(() => true);
                 throw error;
             }
@@ -81,11 +81,18 @@ export function mount(target, snapshot, actions) {
     return {
         update(next) {
             if (disposed) return;
-            const hideMain = next.cacheStatus === 'loading' || !!next.error;
-            disposeLeaves(leaf => leaf.name !== 'mountControls' && (
-                hideMain || (leaf.name === 'mountBulkToolbar' && !next.editable)
-            ));
-            flushSync(() => { current = next; });
+            try {
+                const hideMain = next.cacheStatus === 'loading' || !!next.error;
+                disposeLeaves(leaf => leaf.name !== 'mountControls' && (
+                    hideMain || (leaf.name === 'mountBulkToolbar' && !next.editable)
+                ));
+                // An inner Svelte boundary removes DOM before its onerror callback.
+                // Catch at the synchronous adapter boundary to clean attached leaves.
+                flushSync(() => { current = next; });
+            } catch (error) {
+                dispose();
+                actions.onError(error);
+            }
         },
         dispose,
     };

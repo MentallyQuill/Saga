@@ -5,7 +5,6 @@
     let { bridge, actions } = $props();
 </script>
 
-<svelte:boundary onerror={actions.onError}>
     <div
         class="saga-lore-workbench-controls saga-loredeck-workbench-controls"
         use:imperativeLeaf={{ key: bridge.snapshot.packId, model: bridge.snapshot, mount: actions.mountControls }}
@@ -42,4 +41,3 @@
             <DetailLeaf snapshot={bridge.snapshot} {actions} />
         </div>
     {/if}
-</svelte:boundary>
