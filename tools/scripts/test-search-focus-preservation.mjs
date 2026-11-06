@@ -103,7 +103,7 @@ const lorecardsPanel = read('src/lorecards/lorecards-panel.js');
 const alphaGate = read('tools/scripts/run-alpha-gate.mjs');
 
 assert(helper.includes('export function preserveInputFocusAfterRender'), 'Input focus helper must expose the render-preservation API.');
-assert.equal(count(loredeckWorkbench, 'preserveInputFocusAfterRender('), 2, 'Loredeck Workbench search inputs must preserve focus across re-render.');
+assert.equal(count(loredeckWorkbench, 'preserveInputFocusAfterRender('), 1, 'Loredeck Workbench Registry search must preserve focus across its existing re-render. Lorecards retained search identity/focus/composition and editor caret are covered by test-loredeck-workbench-browser-parity.mjs.');
 assert.equal(count(contextWorkbench, 'preserveInputFocusAfterRender('), 2, 'Context Workbench search inputs must preserve focus across re-render.');
 assert.equal(count(loredecksTab, 'preserveInputFocusAfterRender('), 1, 'Deck Maker project search must preserve focus across shelf re-render.');
 assert(lorecardsPanel.includes('captureTextInputFocus(search)'), 'Lorecards workbench searches must capture selection before delayed re-render.');

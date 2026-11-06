@@ -1920,8 +1920,50 @@ function Fi(e, t, n) {
 	}
 	return r === "" ? null : r;
 }
+function Ii(e, t = !1) {
+	var n = t ? " !important;" : ";", r = "";
+	for (var i of Object.keys(e)) {
+		var a = e[i];
+		a != null && a !== "" && (r += " " + i + ": " + a + n);
+	}
+	return r;
+}
+function Li(e) {
+	return e[0] !== "-" || e[1] !== "-" ? e.toLowerCase() : e;
+}
+function Ri(e, t) {
+	if (t) {
+		var n = "", r, i;
+		if (Array.isArray(t) ? (r = t[0], i = t[1]) : r = t, e) {
+			e = String(e).replaceAll(/\/\*.*?\*\//g, "").trim();
+			var a = !1, o = 0, s = !1, c = [];
+			r && c.push(...Object.keys(r).map(Li)), i && c.push(...Object.keys(i).map(Li));
+			var l = 0, u = -1;
+			let t = e.length;
+			for (var d = 0; d < t; d++) {
+				var f = e[d];
+				if (s ? f === "/" && e[d - 1] === "*" && (s = !1) : a ? a === f && (a = !1) : f === "/" && e[d + 1] === "*" ? s = !0 : f === "\"" || f === "'" ? a = f : f === "(" ? o++ : f === ")" && o--, !s && a === !1 && o === 0) {
+					if (f === ":" && u === -1) u = d;
+					else if (f === ";" || d === t - 1) {
+						if (u !== -1) {
+							var p = Li(e.substring(l, u).trim());
+							if (!c.includes(p)) {
+								f !== ";" && d++;
+								var m = e.substring(l, d).trim();
+								n += " " + m + ";";
+							}
+						}
+						l = d + 1, u = -1;
+					}
+				}
+			}
+		}
+		return r && (n += Ii(r)), i && (n += Ii(i, !0)), n = n.trim(), n === "" ? null : n;
+	}
+	return e == null ? null : String(e);
+}
 // node_modules/svelte/src/internal/client/dom/elements/class.js
-function Ii(e, t, n, r, i, a) {
+function zi(e, t, n, r, i, a) {
 	var o = e[ve];
 	if (S || o !== n || o === void 0) {
 		var s = Fi(n, r, a);
@@ -1932,26 +1974,41 @@ function Ii(e, t, n, r, i, a) {
 	}
 	return a;
 }
-// node_modules/svelte/src/internal/client/dom/elements/attributes.js
-var Li = Symbol("is custom element"), Ri = Symbol("is html"), zi = Se ? "link" : "LINK";
-function Bi(e, t, n, r) {
-	var i = Vi(e);
-	if (!(S && (i[t] = e.getAttribute(t), t === "src" || t === "srcset" || t === "href" && e.nodeName === zi))) {
-		var a = i[t];
-		a !== (i[t] = n) && (t === "loading" && (e[ge] = n), n == null ? e.removeAttribute(t) : typeof n != "string" && Ui(e).has(t) ? e[t] = n : (!S || typeof n != "number" && typeof n != "boolean" || a !== String(n)) && e.setAttribute(t, n));
+// node_modules/svelte/src/internal/client/dom/elements/style.js
+function Bi(e, t = {}, n, r) {
+	for (var i in n) {
+		var a = n[i];
+		t[i] !== a && (n[i] == null ? e.style.removeProperty(i) : e.style.setProperty(i, a, r));
 	}
 }
-function Vi(e) {
+function Vi(e, t, n, r) {
+	var i = e[ye];
+	if (S || i !== t) {
+		var a = Ri(t, r);
+		S && a === e.getAttribute("style") || (a == null ? e.removeAttribute("style") : e.style.cssText = a), e[ye] = t;
+	} else r && (Array.isArray(r) ? (Bi(e, n == null ? void 0 : n[0], r[0]), Bi(e, n == null ? void 0 : n[1], r[1], "important")) : Bi(e, n, r));
+	return r;
+}
+// node_modules/svelte/src/internal/client/dom/elements/attributes.js
+var Hi = Symbol("is custom element"), Ui = Symbol("is html"), Wi = Se ? "link" : "LINK";
+function Gi(e, t, n, r) {
+	var i = Ki(e);
+	if (!(S && (i[t] = e.getAttribute(t), t === "src" || t === "srcset" || t === "href" && e.nodeName === Wi))) {
+		var a = i[t];
+		a !== (i[t] = n) && (t === "loading" && (e[ge] = n), n == null ? e.removeAttribute(t) : typeof n != "string" && Ji(e).has(t) ? e[t] = n : (!S || typeof n != "number" && typeof n != "boolean" || a !== String(n)) && e.setAttribute(t, n));
+	}
+}
+function Ki(e) {
 	return e[_e] ??= {
-		[Li]: e.nodeName.includes("-"),
-		[Ri]: e.namespaceURI === n
+		[Hi]: e.nodeName.includes("-"),
+		[Ui]: e.namespaceURI === n
 	};
 }
-var Hi = /* @__PURE__ */ new Map();
-function Ui(e) {
-	var t = e.getAttribute("is") || e.nodeName, n = Hi.get(t);
+var qi = /* @__PURE__ */ new Map();
+function Ji(e) {
+	var t = e.getAttribute("is") || e.nodeName, n = qi.get(t);
 	if (n) return n;
-	Hi.set(t, n = /* @__PURE__ */ new Set());
+	qi.set(t, n = /* @__PURE__ */ new Set());
 	for (var r, i = e, a = Element.prototype; a !== i;) {
 		for (var o in r = l(i), r) r[o].set && o !== "innerHTML" && o !== "textContent" && o !== "innerText" && n.add(o);
 		i = f(i);
@@ -1959,45 +2016,45 @@ function Ui(e) {
 	return n;
 }
 // node_modules/svelte/src/internal/client/dom/elements/bindings/size.js
-var Wi, Gi = /* @__PURE__ */ new WeakMap(), Ki = /* @__PURE__ */ new WeakMap(), qi = /* @__PURE__ */ new WeakMap(), Ji = /* @__PURE__ */ new WeakSet(), Yi = class {
+var Yi, Xi = /* @__PURE__ */ new WeakMap(), Zi = /* @__PURE__ */ new WeakMap(), Qi = /* @__PURE__ */ new WeakMap(), $i = /* @__PURE__ */ new WeakSet(), ea = class {
 	constructor(e) {
-		ht(this, Ji), D(this, Gi, /* @__PURE__ */ new WeakMap()), D(this, Ki, void 0), D(this, qi, void 0), A(qi, this, e);
+		ht(this, $i), D(this, Xi, /* @__PURE__ */ new WeakMap()), D(this, Zi, void 0), D(this, Qi, void 0), A(Qi, this, e);
 	}
 	observe(e, t) {
-		var n = k(Gi, this).get(e) || /* @__PURE__ */ new Set();
-		return n.add(t), k(Gi, this).set(e, n), O(Ji, this, Xi).call(this).observe(e, k(qi, this)), () => {
-			var n = k(Gi, this).get(e);
-			n.delete(t), n.size === 0 && (k(Gi, this).delete(e), k(Ki, this).unobserve(e));
+		var n = k(Xi, this).get(e) || /* @__PURE__ */ new Set();
+		return n.add(t), k(Xi, this).set(e, n), O($i, this, ta).call(this).observe(e, k(Qi, this)), () => {
+			var n = k(Xi, this).get(e);
+			n.delete(t), n.size === 0 && (k(Xi, this).delete(e), k(Zi, this).unobserve(e));
 		};
 	}
 };
-Wi = Yi;
-function Xi() {
-	return k(Ki, this) ?? A(Ki, this, new ResizeObserver((e) => {
+Yi = ea;
+function ta() {
+	return k(Zi, this) ?? A(Zi, this, new ResizeObserver((e) => {
 		for (var t of e) {
-			Wi.entries.set(t.target, t);
-			for (var n of k(Gi, this).get(t.target) || []) n(t);
+			Yi.entries.set(t.target, t);
+			for (var n of k(Xi, this).get(t.target) || []) n(t);
 		}
 	}));
 }
 // node_modules/svelte/src/internal/disclose-version.js
-y(Yi, "entries", /* @__PURE__ */ new WeakMap()), typeof window < "u" && ((window.__svelte ??= {}).v ??= /* @__PURE__ */ new Set()).add("5");
+y(ea, "entries", /* @__PURE__ */ new WeakMap()), typeof window < "u" && ((window.__svelte ??= {}).v ??= /* @__PURE__ */ new Set()).add("5");
 // src/ui/loredeck-workbench/LorecardRow.svelte
-var Zi = /* @__PURE__ */ G("<span role=\"checkbox\"> </span>"), Qi = /* @__PURE__ */ G("<span class=\"saga-loredeck-workbench-select-cell\"><!></span>"), $i = /* @__PURE__ */ G("<span class=\"saga-lore-workbench-cell-sub\"> </span>"), ea = /* @__PURE__ */ G("<div class=\"saga-lore-workbench-cell\"><span class=\"saga-lore-workbench-cell-main\"> </span> <!></div>"), ta = /* @__PURE__ */ G("<button type=\"button\"><!> <!></button>");
-function na(e, t) {
+var na = /* @__PURE__ */ G("<span role=\"checkbox\"> </span>"), ra = /* @__PURE__ */ G("<span class=\"saga-loredeck-workbench-select-cell\"><!></span>"), ia = /* @__PURE__ */ G("<span class=\"saga-lore-workbench-cell-sub\"> </span>"), aa = /* @__PURE__ */ G("<div class=\"saga-lore-workbench-cell\"><span class=\"saga-lore-workbench-cell-main\"> </span> <!></div>"), oa = /* @__PURE__ */ G("<button type=\"button\"><!> <!></button>");
+function sa(e, t) {
 	Ue(t, !0);
-	var n = ta();
+	var n = oa();
 	let r;
 	var i = Cn(n), a = (e) => {
-		var n = Qi(), r = Cn(n), i = (e) => {
-			var n = Zi();
+		var n = ra(), r = Cn(n), i = (e) => {
+			var n = na();
 			let r;
 			var i = Tn(n, !0);
 			Ni(n, (e, n) => {
 				var r, i;
 				return (r = (i = t.actions).tooltip) == null ? void 0 : r.call(i, e, n);
 			}, () => t.descriptor.checked ? "Remove this Lorecard from bulk selection." : "Add this Lorecard to bulk selection."), Hn(() => {
-				r = Ii(n, 1, "saga-loredeck-workbench-select-box", null, r, { "saga-loredeck-workbench-select-box-checked": t.descriptor.checked }), Bi(n, "aria-checked", t.descriptor.checked ? "true" : "false"), li(i, t.descriptor.checked ? "x" : "");
+				r = zi(n, 1, "saga-loredeck-workbench-select-box", null, r, { "saga-loredeck-workbench-select-box-checked": t.descriptor.checked }), Gi(n, "aria-checked", t.descriptor.checked ? "true" : "false"), li(i, t.descriptor.checked ? "x" : "");
 			}), Dr("click", n, (e) => {
 				e.stopPropagation(), t.actions.toggleRow(t.descriptor.row.id, e);
 			}), K(e, n);
@@ -2009,8 +2066,8 @@ function na(e, t) {
 	Si(i, (e) => {
 		t.editable && e(a);
 	}), Di(En(i, 2), 17, () => t.descriptor.cells, Ci, (e, t) => {
-		var n = ea(), r = Cn(n), i = Tn(r, !0), a = En(r, 2), o = (e) => {
-			var n = $i(), r = Tn(n, !0);
+		var n = aa(), r = Cn(n), i = Tn(r, !0), a = En(r, 2), o = (e) => {
+			var n = ia(), r = Tn(n, !0);
 			Hn((e) => li(r, e), [() => String(W(t).subText)]), K(e, n);
 		};
 		Si(a, (e) => {
@@ -2022,7 +2079,7 @@ function na(e, t) {
 	}, () => {
 		var e;
 		return `Inspect ${((e = t.descriptor.row.entry) == null ? void 0 : e.title) || t.descriptor.row.id}.`;
-	}), Hn(() => r = Ii(n, 1, "saga-lore-workbench-row saga-lore-workbench-entry-row saga-loredeck-workbench-entry-row", null, r, {
+	}), Hn(() => r = zi(n, 1, "saga-lore-workbench-row saga-lore-workbench-entry-row saga-loredeck-workbench-entry-row", null, r, {
 		"saga-loredeck-workbench-draft-row": t.descriptor.row.draft,
 		"saga-loredeck-workbench-disabled-row": t.descriptor.row.disabled,
 		"saga-loredeck-workbench-row-selected": t.descriptor.checked,
@@ -2031,7 +2088,7 @@ function na(e, t) {
 }
 Or(["click"]);
 // src/ui/loredeck-workbench/imperative-leaf.js
-function ra(e, t) {
+function ca(e, t) {
 	let n = t, r = n.mount(e, n.model);
 	return {
 		update(t) {
@@ -2043,8 +2100,8 @@ function ra(e, t) {
 	};
 }
 // src/ui/loredeck-workbench/DetailLeaf.svelte
-var ia = /* @__PURE__ */ G("<div></div>");
-function aa(e, t) {
+var la = /* @__PURE__ */ G("<div></div>");
+function ua(e, t) {
 	Ue(t, !0);
 	let n = (e) => {
 		var t, n;
@@ -2055,52 +2112,61 @@ function aa(e, t) {
 			e.editable
 		]);
 	};
-	var r = ia();
+	var r = la();
 	let i;
-	Ni(r, (e, t) => ra == null ? void 0 : ra(e, t), () => ({
+	Ni(r, (e, t) => ca == null ? void 0 : ca(e, t), () => ({
 		key: n(t.snapshot),
 		model: t.snapshot,
 		mount: t.actions.mountDetail
-	})), Hn(() => i = Ii(r, 1, "saga-lore-workbench-detail saga-loredeck-workbench-detail", null, i, { "saga-loredeck-workbench-editor-detail": t.snapshot.editable && !!t.snapshot.selectedRow })), K(e, r), We();
+	})), Hn(() => i = zi(r, 1, "saga-lore-workbench-detail saga-loredeck-workbench-detail", null, i, { "saga-loredeck-workbench-editor-detail": t.snapshot.editable && !!t.snapshot.selectedRow })), K(e, r), We();
 }
 // src/ui/loredeck-workbench/LorecardsView.svelte
-var oa = /* @__PURE__ */ G("<div class=\"saga-lore-empty\">Loading Lorecards...</div>"), sa = /* @__PURE__ */ G("<div class=\"saga-lore-empty\"> </div>"), ca = /* @__PURE__ */ G("<div class=\"saga-loredeck-workbench-bulk-toolbar\"></div>"), la = /* @__PURE__ */ G("<div class=\"saga-lore-empty\">No Lorecards match the current filters.</div>"), ua = /* @__PURE__ */ G("<div class=\"saga-lore-workbench-row-note\"> </div>"), da = /* @__PURE__ */ G("<!> <div class=\"saga-lore-workbench-main saga-loredeck-workbench-main\"><div><div class=\"saga-lore-workbench-row saga-lore-workbench-row-header\"></div> <!> <!></div> <!></div>", 1), fa = /* @__PURE__ */ G("<div class=\"saga-lore-workbench-controls saga-loredeck-workbench-controls\"></div> <!>", 1);
-function pa(e, t) {
+var da = /* @__PURE__ */ G("<div class=\"saga-lore-empty\">Loading Lorecards...</div>"), fa = /* @__PURE__ */ G("<div class=\"saga-lore-empty\"> </div>"), pa = /* @__PURE__ */ G("<div class=\"saga-loredeck-workbench-bulk-toolbar\"></div>"), ma = /* @__PURE__ */ G("<div class=\"saga-lore-empty\">No Lorecards match the current filters.</div>"), ha = /* @__PURE__ */ G("<div class=\"saga-lore-workbench-row-note\"> </div>"), ga = /* @__PURE__ */ G("<!> <div class=\"saga-lore-workbench-main saga-loredeck-workbench-main\"><div><div class=\"saga-lore-workbench-row saga-lore-workbench-row-header\"></div> <!> <!></div> <!></div>", 1), _a = /* @__PURE__ */ G("<div class=\"saga-lore-workbench-controls saga-loredeck-workbench-controls\"></div> <!> <!>", 1);
+function va(e, t) {
 	Ue(t, !0);
-	var n = fa(), r = wn(n);
-	Ni(r, (e, t) => ra == null ? void 0 : ra(e, t), () => ({
+	var n = _a(), r = wn(n);
+	Ni(r, (e, t) => ca == null ? void 0 : ca(e, t), () => ({
 		key: t.bridge.snapshot.packId,
 		model: t.bridge.snapshot,
 		mount: t.actions.mountControls
 	}));
 	var i = En(r, 2), a = (e) => {
-		K(e, oa());
+		K(e, da());
 	}, o = (e) => {
-		var n = sa(), r = Tn(n, !0);
+		var n = fa(), r = Tn(n, !0);
 		Hn(() => li(r, t.bridge.snapshot.error)), K(e, n);
-	}, s = (e) => {
-		var n = da(), r = wn(n), i = (e) => {
-			var n = ca();
-			Ni(n, (e, t) => ra == null ? void 0 : ra(e, t), () => ({
+	};
+	Si(i, (e) => {
+		t.bridge.snapshot.cacheStatus === "loading" ? e(a) : t.bridge.snapshot.error && e(o, 1);
+	});
+	var s = En(i, 2), c = (e) => {
+		var n = ga(), r = wn(n), i = (e) => {
+			var n = pa();
+			let r;
+			Ni(n, (e, t) => ca == null ? void 0 : ca(e, t), () => ({
 				key: t.bridge.snapshot.packId,
 				model: t.bridge.snapshot,
 				mount: t.actions.mountBulkToolbar
-			})), K(e, n);
+			})), Hn(() => {
+				Gi(n, "hidden", t.bridge.snapshot.cacheStatus === "loading" || !!t.bridge.snapshot.error), r = Vi(n, "", r, { display: t.bridge.snapshot.cacheStatus === "loading" || t.bridge.snapshot.error ? "none" : void 0 });
+			}), K(e, n);
 		};
 		Si(r, (e) => {
 			t.bridge.snapshot.editable && e(i);
 		});
-		var a = En(r, 2), o = Cn(a);
-		let s;
-		var c = Cn(o);
-		Ni(c, (e, t) => ra == null ? void 0 : ra(e, t), () => ({
+		var a = En(r, 2);
+		let o;
+		var s = Cn(a);
+		let c;
+		var l = Cn(s);
+		Ni(l, (e, t) => ca == null ? void 0 : ca(e, t), () => ({
 			key: JSON.stringify([t.bridge.snapshot.packId, t.bridge.snapshot.editable]),
 			model: t.bridge.snapshot,
 			mount: t.actions.mountTableHeader
 		}));
-		var l = En(c, 2);
-		Di(l, 17, () => t.bridge.snapshot.displayRows, (e) => e.key, (e, n) => {
-			na(e, {
+		var u = En(l, 2);
+		Di(u, 17, () => t.bridge.snapshot.displayRows, (e) => e.key, (e, n) => {
+			sa(e, {
 				get descriptor() {
 					return W(n);
 				},
@@ -2112,29 +2178,31 @@ function pa(e, t) {
 				}
 			});
 		});
-		var u = En(l, 2), d = (e) => {
-			K(e, la());
-		}, f = (e) => {
-			var n = ua(), r = Tn(n);
+		var d = En(u, 2), f = (e) => {
+			K(e, ma());
+		}, p = (e) => {
+			var n = ha(), r = Tn(n);
 			Hn(() => li(r, `Showing ${t.bridge.snapshot.displayRows.length ?? ""} of ${t.bridge.snapshot.logicalRows.length ?? ""}. Narrow search or filters to inspect more.`)), K(e, n);
 		};
-		Si(u, (e) => {
-			t.bridge.snapshot.logicalRows.length ? t.bridge.snapshot.displayRows.length < t.bridge.snapshot.logicalRows.length && e(f, 1) : e(d);
-		}), Oe(o), aa(En(o, 2), {
+		Si(d, (e) => {
+			t.bridge.snapshot.logicalRows.length ? t.bridge.snapshot.displayRows.length < t.bridge.snapshot.logicalRows.length && e(p, 1) : e(f);
+		}), Oe(s), ua(En(s, 2), {
 			get snapshot() {
 				return t.bridge.snapshot;
 			},
 			get actions() {
 				return t.actions;
 			}
-		}), Oe(a), Hn(() => s = Ii(o, 1, "saga-lore-workbench-table saga-loredeck-workbench-table", null, s, { "saga-loredeck-workbench-selectable-table": t.bridge.snapshot.editable })), K(e, n);
+		}), Oe(a), Hn(() => {
+			Gi(a, "hidden", t.bridge.snapshot.cacheStatus === "loading" || !!t.bridge.snapshot.error), o = Vi(a, "", o, { display: t.bridge.snapshot.cacheStatus === "loading" || t.bridge.snapshot.error ? "none" : void 0 }), c = zi(s, 1, "saga-lore-workbench-table saga-loredeck-workbench-table", null, c, { "saga-loredeck-workbench-selectable-table": t.bridge.snapshot.editable });
+		}), K(e, n);
 	};
-	Si(i, (e) => {
-		t.bridge.snapshot.cacheStatus === "loading" ? e(a) : t.bridge.snapshot.error ? e(o, 1) : e(s, -1);
+	Si(s, (e) => {
+		(t.bridge.snapshot.retainLoadedView || t.bridge.snapshot.cacheStatus !== "loading" && !t.bridge.snapshot.error) && e(c);
 	}), K(e, n), We();
 }
 // src/ui/loredeck-workbench/adapter.svelte.js
-function ma(e, t, n) {
+function ya(e, t, n) {
 	let r = /* @__PURE__ */ on(t), i = null, a = !1, o = /* @__PURE__ */ new Set(), s = { get snapshot() {
 		return W(r);
 	} }, c = (e) => {
@@ -2199,7 +2267,7 @@ function ma(e, t, n) {
 		a || (a = !0, u(() => !0), i && mi(i, { outro: !1 }).catch(n.onError), i = null, cn(r, null));
 	}
 	try {
-		i = ui(pa, {
+		i = ui(va, {
 			target: e,
 			props: {
 				bridge: s,
@@ -2213,7 +2281,7 @@ function ma(e, t, n) {
 	return {
 		update(e) {
 			if (!a) try {
-				let t = e.cacheStatus === "loading" || !!e.error;
+				let t = (e.cacheStatus === "loading" || !!e.error) && !e.retainLoadedView;
 				u((n) => n.name !== "mountControls" && (t || n.name === "mountBulkToolbar" && !e.editable)), Jt(() => {
 					cn(r, e);
 				});
@@ -2224,4 +2292,4 @@ function ma(e, t, n) {
 		dispose: d
 	};
 }
-export { ma as mount };
+export { ya as mount };

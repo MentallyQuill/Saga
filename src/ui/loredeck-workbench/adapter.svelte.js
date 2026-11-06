@@ -82,7 +82,7 @@ export function mount(target, snapshot, actions) {
         update(next) {
             if (disposed) return;
             try {
-                const hideMain = next.cacheStatus === 'loading' || !!next.error;
+                const hideMain = (next.cacheStatus === 'loading' || !!next.error) && !next.retainLoadedView;
                 disposeLeaves(leaf => leaf.name !== 'mountControls' && (
                     hideMain || (leaf.name === 'mountBulkToolbar' && !next.editable)
                 ));

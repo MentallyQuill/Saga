@@ -118,6 +118,17 @@ test('compiled adapter retains keyed rows and leaf inputs, updates current snaps
       const statusRetained = host.querySelector('textarea') === detail && host.querySelector('textarea + span').textContent === 'saving';
       const menuRetained = search.nextElementSibling === menu && menu.getAttribute('aria-expanded') === 'true';
       const rowsRetained = rowNodes.every((node, index) => host.querySelectorAll('.saga-loredeck-workbench-entry-row')[index] === node);
+      const beforeReloadDisposals = counts.disposed;
+      refresh({ cacheStatus: 'loading', retainLoadedView: true });
+      const retainedLoading = host.querySelector('.saga-lore-empty')?.textContent === 'Loading Lorecards...'
+        && host.querySelector('textarea') === detail
+        && host.querySelector('.saga-lore-workbench-main').style.display === 'none';
+      refresh({ cacheStatus: 'error', error: 'Reload failed', retainLoadedView: true });
+      const retainedError = host.querySelector('.saga-lore-empty')?.textContent === 'Reload failed'
+        && host.querySelector('textarea') === detail;
+      refresh({ cacheStatus: 'ready', error: null, retainLoadedView: false });
+      const retainedReloadPresentation = retainedLoading && retainedError && counts.disposed === beforeReloadDisposals
+        && host.querySelector('textarea') === detail && !host.querySelector('.saga-lore-workbench-main').hidden;
       rowNodes[2].querySelector('[role=checkbox]').click();
       const checked = rowNodes[2].getAttribute('class').includes('saga-loredeck-workbench-row-selected');
       rowNodes[2].click();
@@ -195,7 +206,7 @@ test('compiled adapter retains keyed rows and leaf inputs, updates current snaps
       const deckReplaced = oldControls !== ownerHost.querySelector('input') && oldDetail !== ownerHost.querySelector('textarea');
       owner.update({ ...snapshot, cacheStatus: 'loading' });
       owner.dispose();
-      return { initial, hierarchy, queryRetained, statusRetained, menuRetained, rowsRetained, checked, selected, detailRemounted, mountsBeforeDispose, disposed, errors, unhandledRejections, mountThrows, initialRenderChildren, loadingText, errorText, emptyText, tooltipShown, tooltipHidden, failureCleanup, tooltipFailureCleanup, renderCleanup, allCleanupConnected: counts.disconnectedCleanup === 0, draftReplaced, draftStatusRetained, readonly, deckReplaced, failedChildren: failedHost.children.length };
+      return { initial, hierarchy, queryRetained, statusRetained, menuRetained, rowsRetained, retainedReloadPresentation, checked, selected, detailRemounted, mountsBeforeDispose, disposed, errors, unhandledRejections, mountThrows, initialRenderChildren, loadingText, errorText, emptyText, tooltipShown, tooltipHidden, failureCleanup, tooltipFailureCleanup, renderCleanup, allCleanupConnected: counts.disconnectedCleanup === 0, draftReplaced, draftStatusRetained, readonly, deckReplaced, failedChildren: failedHost.children.length };
     });
     assert.equal(result.initial.rowCount, 500);
     assert.deepEqual(result.initial.childClasses, [
@@ -203,7 +214,7 @@ test('compiled adapter retains keyed rows and leaf inputs, updates current snaps
       'saga-loredeck-workbench-bulk-toolbar', 'saga-lore-workbench-main saga-loredeck-workbench-main',
     ]);
     assert.equal(result.initial.limit, 'Showing 500 of 503. Narrow search or filters to inspect more.');
-    for (const name of ['hierarchy', 'queryRetained', 'statusRetained', 'menuRetained', 'rowsRetained', 'checked', 'selected', 'detailRemounted', 'allCleanupConnected', 'draftReplaced', 'draftStatusRetained', 'readonly', 'deckReplaced']) assert.equal(result[name], true, name);
+    for (const name of ['hierarchy', 'queryRetained', 'statusRetained', 'menuRetained', 'rowsRetained', 'retainedReloadPresentation', 'checked', 'selected', 'detailRemounted', 'allCleanupConnected', 'draftReplaced', 'draftStatusRetained', 'readonly', 'deckReplaced']) assert.equal(result[name], true, name);
     assert.deepEqual([result.mountsBeforeDispose.controls, result.mountsBeforeDispose.bulk, result.mountsBeforeDispose.header, result.mountsBeforeDispose.detail], [1, 1, 1, 2]);
     assert.equal(result.disposed.disposed, 5);
     assert.equal(result.disposed.disconnectedCleanup, 0, 'leaves dispose while their hosts are connected');

@@ -50,8 +50,10 @@ export function createLoredeckSearchInput(options = {}) {
 }
 
 export function createLoredeckSelectControl(options = {}) {
-    const normalizedOptions = (options.options || []).map(normalizeOption);
-    const allowed = new Set(normalizedOptions.map(item => String(item.value ?? '')));
+    let normalizedOptions = (options.options || []).map(normalizeOption);
+    let allowed = new Set(normalizedOptions.map(item => String(item.value ?? '')));
+    const optionSignature = items => JSON.stringify(items.map(item => [String(item.value ?? ''), String(item.label ?? item.value ?? ''), String(item.tooltip || '')]));
+    let signature = optionSignature(normalizedOptions);
     const fallbackValue = String(options.fallbackValue ?? normalizedOptions[0]?.value ?? '');
     let currentValue = allowed.has(String(options.value ?? '')) ? String(options.value ?? '') : fallbackValue;
 
@@ -137,6 +139,18 @@ export function createLoredeckSelectControl(options = {}) {
             menu.appendChild(option);
         }
     }
+
+    select.updateOptions = nextOptions => {
+        const next = (nextOptions || []).map(normalizeOption);
+        const nextSignature = optionSignature(next);
+        if (nextSignature === signature) return;
+        signature = nextSignature;
+        normalizedOptions = next;
+        allowed = new Set(next.map(item => String(item.value ?? '')));
+        if (!allowed.has(currentValue)) currentValue = allowed.has(fallbackValue) ? fallbackValue : String(next[0]?.value ?? '');
+        syncButtonLabel();
+        if (!menu.hidden) renderMenu();
+    };
 
     function openMenu() {
         if (button.disabled) return;

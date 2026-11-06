@@ -343,6 +343,22 @@ assert(button, 'Benchmark dropdown must render a clickable button.');
 assert(menu, 'Benchmark dropdown must render a menu container.');
 assert.equal(document.createdTags.get('select') || 0, 0, 'Benchmark dropdown must not create native select elements.');
 
+assert.equal(typeof control.updateOptions, 'function', 'Retained dropdown must accept authoritative option updates.');
+button.click();
+const firstOption = menu.children[0];
+control.updateOptions(createOptions(optionCount));
+assert.equal(menu.children[0], firstOption, 'Equivalent options must preserve existing option nodes.');
+assert.equal(menu.hidden, false, 'Equivalent options must retain the open menu.');
+assert.equal(control.value, 'option-0', 'Equivalent options must retain selection.');
+control.updateOptions([...createOptions(optionCount), ['added', 'Added category']]);
+assert.equal(control.querySelector('.saga-loredeck-select-button'), button, 'Changed options must retain the trigger.');
+assert.equal(control.querySelector('.saga-loredeck-select-menu'), menu, 'Changed options must retain the menu.');
+assert.equal(menu.hidden, false, 'Changed options must retain open state.');
+menu.children[menu.children.length - 1].click();
+assert.equal(control.value, 'added', 'New authoritative options must be selectable.');
+control.updateOptions(createOptions(optionCount));
+assert.equal(control.value, 'option-0', 'Removed selection must use the configured fallback.');
+
 for (let index = 0; index < warmup; index += 1) {
   button.click();
   button.click();

@@ -9,6 +9,9 @@ import {
     createEmptyMessage,
     createKeyValue,
     createStatusPill,
+    createManagedTooltip,
+    disposeRuntimeTooltips,
+    hideFloatingTooltip,
     humanizeScopeKey,
     toast,
     wireOverlayBackdropClose,
@@ -33,11 +36,14 @@ import {
     setLoredeckActionButtonBusy,
     withLoredeckConfirmedActionButton,
 } from './loredeck-action-rows.js';
+import { createLoredeckWorkbenchViewModel } from './loredeck-workbench-view-model.js';
+import { createLoredeckWorkbenchViewLifetime } from './loredeck-workbench-view-lifetime.js';
 
 const LOREDECK_WORKBENCH_ID = 'saga-loredeck-workbench';
 
 let loredeckWorkbenchDeps = {};
 let loredeckWorkbenchPackId = '';
+let loredeckWorkbenchPack = null;
 let loredeckWorkbenchQuery = '';
 let loredeckWorkbenchRelevanceFilter = 'all';
 let loredeckWorkbenchCategoryFilter = 'all';
@@ -63,6 +69,48 @@ let loredeckWorkbenchDraftEntry = null;
 let loredeckWorkbenchBulkSelection = new Set();
 let loredeckWorkbenchLastSelectionId = '';
 let loredeckWorkbenchScrollState = null;
+const workbenchLifetime = createLoredeckWorkbenchViewLifetime();
+const workbenchFrames = new Set();
+const workbenchFormDisposers = new WeakMap();
+const workbenchFormBuffers = new WeakMap();
+let workbenchView = null;
+let workbenchModel = null;
+let viewModulePromise = null;
+
+function loadWorkbenchViewModule() {
+    if (!viewModulePromise) {
+        viewModulePromise = import('../ui/generated/workbench/view.js').catch(error => {
+            viewModulePromise = null;
+            throw error;
+        });
+    }
+    return viewModulePromise;
+}
+
+function scheduleWorkbenchFrame(callback) {
+    const owner = workbenchLifetime.captureSession();
+    const view = workbenchLifetime.captureView(workbenchView?.host);
+    const frame = requestAnimationFrame(() => {
+        workbenchFrames.delete(frame);
+        if (workbenchLifetime.isSessionCurrent(owner) && (!view || workbenchLifetime.isViewCurrent(view))) callback();
+    });
+    workbenchFrames.add(frame);
+}
+
+function disposeWorkbenchView() {
+    workbenchLifetime.invalidateView();
+    for (const frame of workbenchFrames) cancelAnimationFrame(frame);
+    workbenchFrames.clear();
+    if (!workbenchView) return;
+    workbenchView.handle?.dispose();
+    disposeRuntimeTooltips(workbenchView.host);
+    workbenchView = null;
+}
+
+function reportWorkbenchViewError(error) {
+    console.error('[Saga] Loredeck Workbench view failed:', error);
+    toast(error?.message ? `Action failed: ${error.message}` : 'Action failed.', 'error');
+}
 
 export function configureLoredeckWorkbenchPanel(deps = {}) {
     loredeckWorkbenchDeps = { ...loredeckWorkbenchDeps, ...(deps || {}) };
@@ -96,6 +144,8 @@ export function openLoredeckWorkbench(packId = '') {
         toast('Select a Loredeck before opening the workbench.', 'warning');
         return;
     }
+    closeLoredeckWorkbench();
+    workbenchLifetime.open(id);
     if (loredeckWorkbenchPackId !== id) resetLoredeckWorkbenchSaveState(id);
     loredeckWorkbenchPackId = id;
     if (loredeckWorkbenchDraftEntry?.packId !== id) loredeckWorkbenchDraftEntry = null;
@@ -105,20 +155,47 @@ export function openLoredeckWorkbench(packId = '') {
     loredeckWorkbenchActiveTab = 'lorecards';
     loredeckWorkbenchRegistryQuery = '';
     loredeckWorkbenchSelectedEntryId = '';
+    loredeckWorkbenchPack = getWorkbenchPack(id);
+    const overlay = document.createElement('div');
+    overlay.id = LOREDECK_WORKBENCH_ID;
+    overlay.className = 'saga-lore-workbench-overlay saga-loredeck-workbench-overlay';
+    overlay.tabIndex = -1;
+    wireOverlayBackdropClose(overlay, closeLoredeckWorkbench);
+    overlay.addEventListener('keydown', event => {
+        if (event.key === 'Escape') closeLoredeckWorkbench();
+    });
+    overlay.appendChild(createLoredeckWorkbenchShell(loredeckWorkbenchPack));
+    document.body.appendChild(overlay);
     renderLoredeckWorkbench();
-    void loadLoredeckWorkbenchRows(id, { force: loredeckWorkbenchCache.packId !== id || !loredeckWorkbenchCache.rows.length });
+    scheduleWorkbenchFrame(() => { overlay.focus?.({ preventScroll: true }); });
+    void loadLoredeckWorkbenchRows(id, { force: loredeckWorkbenchCache.packId !== id || loredeckWorkbenchCache.status !== 'loaded' || !loredeckWorkbenchCache.rows.length });
 }
 
 export function closeLoredeckWorkbench() {
-    document.getElementById(LOREDECK_WORKBENCH_ID)?.remove();
+    workbenchLifetime.close();
+    for (const frame of workbenchFrames) cancelAnimationFrame(frame);
+    workbenchFrames.clear();
+    disposeWorkbenchView();
+    workbenchModel = null;
+    loredeckWorkbenchPack = null;
+    const overlay = document.getElementById(LOREDECK_WORKBENCH_ID);
+    disposeRuntimeTooltips(overlay);
+    overlay?.remove();
 }
 
 export function refreshLoredeckWorkbench() {
     if (!document.getElementById(LOREDECK_WORKBENCH_ID)) return;
+    loredeckWorkbenchPack = getWorkbenchPack();
     renderLoredeckWorkbench();
 }
 
+function refreshWorkbenchPackAfterMutation(owner, packId) {
+    if (workbenchLifetime.isSessionCurrent(owner) && packId === loredeckWorkbenchPackId) loredeckWorkbenchPack = getWorkbenchPack(packId);
+}
+
 function getWorkbenchPack(packId = loredeckWorkbenchPackId) {
+    // Hydration may clone the full payload. View-only updates reuse the active
+    // authoritative reference; fresh reads belong at source/business boundaries.
     const state = getState();
     const id = String(packId || '').trim();
     if (!id) return null;
@@ -148,25 +225,67 @@ function restoreLoredeckWorkbenchScrollState(overlay = document.getElementById(L
 }
 
 function renderLoredeckWorkbench() {
-    const pack = getWorkbenchPack();
-    let overlay = document.getElementById(LOREDECK_WORKBENCH_ID);
-    if (!overlay) {
-        overlay = document.createElement('div');
-        overlay.id = LOREDECK_WORKBENCH_ID;
-        overlay.className = 'saga-lore-workbench-overlay saga-loredeck-workbench-overlay';
-        overlay.tabIndex = -1;
-        wireOverlayBackdropClose(overlay, closeLoredeckWorkbench);
-        overlay.addEventListener('keydown', event => {
-            if (event.key === 'Escape') closeLoredeckWorkbench();
-        });
-        document.body.appendChild(overlay);
+    const overlay = document.getElementById(LOREDECK_WORKBENCH_ID);
+    if (!overlay) return;
+    const pack = loredeckWorkbenchPack;
+    updateLoredeckWorkbenchHeader(overlay, pack);
+    updateLoredeckWorkbenchTabs(overlay, pack);
+    const body = overlay.querySelector('.saga-loredeck-workbench-body');
+    if (!pack?.packId || !body) return;
+    if (workbenchView?.tab !== loredeckWorkbenchActiveTab) {
+        const previousHost = workbenchView?.host;
+        disposeWorkbenchView();
+        if (previousHost) previousHost.remove();
+        const host = document.createElement('div');
+        host.className = loredeckWorkbenchActiveTab === 'registries'
+            ? 'saga-lore-workbench-view saga-loredeck-workbench-registries-view'
+            : 'saga-lore-workbench-view saga-loredeck-workbench-view';
+        body.appendChild(host);
+        workbenchView = { host, tab: loredeckWorkbenchActiveTab, handle: null, pending: null };
+        host.appendChild(createEmptyMessage('Loading Lorecards...'));
     }
-    loredeckWorkbenchScrollState = captureLoredeckWorkbenchScrollState(overlay);
-    overlay.replaceChildren(createLoredeckWorkbenchShell(pack));
-    requestAnimationFrame(() => {
-        overlay.focus?.({ preventScroll: true });
+    if (loredeckWorkbenchActiveTab === 'registries') {
+        loredeckWorkbenchScrollState = captureLoredeckWorkbenchScrollState(overlay);
+        disposeRuntimeTooltips(workbenchView.host);
+        const next = createLoredeckWorkbenchRegistriesView(pack);
+        workbenchView.host.replaceChildren(...next.childNodes);
         restoreLoredeckWorkbenchScrollState(overlay);
-    });
+        return;
+    }
+    const rows = getFilteredLoredeckWorkbenchRows();
+    if (!['loading', 'error'].includes(loredeckWorkbenchCache.status)) {
+        ensureLoredeckWorkbenchSelection(rows);
+        reconcileLoredeckWorkbenchBulkSelection(rows);
+    }
+    // A real reload retains the last authoritative rows. The view hides its
+    // retained main subtree behind the original loading/error presentation.
+    const hasLoadedRows = loredeckWorkbenchCache.packId === pack.packId && loredeckWorkbenchCache.rows.length > 0;
+    const availableRows = getWorkbenchPresentationRows();
+    workbenchModel = createLoredeckWorkbenchViewModel({
+        packId: pack.packId, pack, filteredRows: rows,
+        selectedEntryId: loredeckWorkbenchSelectedEntryId,
+        selectedIds: getLoredeckWorkbenchSelectedIds(), editable: isLoredeckWorkbenchEditablePack(pack),
+        query: loredeckWorkbenchQuery,
+        filters: { relevance: loredeckWorkbenchRelevanceFilter, category: loredeckWorkbenchCategoryFilter, status: loredeckWorkbenchStatusFilter },
+        cacheStatus: loredeckWorkbenchCache.status,
+        error: loredeckWorkbenchCache.error,
+        retainLoadedView: hasLoadedRows,
+        totalCount: availableRows.length,
+        matchCount: ['loading', 'error'].includes(loredeckWorkbenchCache.status) ? Number(rows.some(row => row.draft)) : rows.length,
+        categoryOptions: getCategoryFilterOptions(availableRows),
+        saveStatus: loredeckWorkbenchSaveState.status,
+        getCells: row => [
+            { text: row.entry?.title || row.id, subText: row.id },
+            { text: getEntryCategory(row.entry) }, { text: getEntryRelevance(row.entry) },
+            { text: row.disabled ? 'disabled' : 'active', subText: row.sourceFile || 'embedded' },
+        ],
+    }, workbenchModel);
+    if (workbenchView.handle) {
+        workbenchView.handle.update(workbenchModel);
+        if (!workbenchView.host.firstElementChild) workbenchView.handle = null;
+    } else if (!workbenchView.pending) {
+        void mountLorecardsView(workbenchView);
+    }
 }
 
 function createLoredeckWorkbenchShell(pack = null) {
@@ -182,10 +301,188 @@ function createLoredeckWorkbenchShell(pack = null) {
         body.appendChild(createLoredeckEmptyState('Select a Loredeck from the Library before opening the workbench.'));
     } else {
         body.appendChild(createLoredeckWorkbenchTabs());
-        body.appendChild(createLoredeckWorkbenchActiveView(pack));
     }
     shell.appendChild(body);
     return shell;
+}
+
+function updateLoredeckWorkbenchHeader(overlay, pack) {
+    overlay.querySelector('.saga-lore-workbench-title').textContent = pack?.title || pack?.packId || 'Loredeck Workbench';
+    overlay.querySelector('.saga-lore-workbench-subtitle').textContent = pack?.description || getLoredeckWorkbenchSubtitle(pack);
+    const chips = overlay.querySelector('.saga-loredeck-workbench-header-chips');
+    if (chips.dataset.workbenchState === getWorkbenchHeaderStateKey(pack)) {
+        const count = chips.children[1];
+        if (count && pack?.packId) count.textContent = `${getWorkbenchPresentationRows().length} Lorecards`;
+        refreshLoredeckWorkbenchSaveChip();
+        return;
+    }
+    disposeRuntimeTooltips(chips);
+    chips.replaceChildren();
+    fillLoredeckWorkbenchHeaderChips(chips, pack);
+}
+
+function getWorkbenchPresentationRows() {
+    return ['loading', 'error'].includes(loredeckWorkbenchCache.status) ? [] : loredeckWorkbenchCache.rows;
+}
+
+function getWorkbenchHeaderStateKey(pack) {
+    return JSON.stringify([pack?.packId, pack?.packId ? getLoredeckTypeLabel(pack.packId) : '', pack?.type, loredeckWorkbenchCache.status === 'loading', loredeckWorkbenchCache.error]);
+}
+
+function updateLoredeckWorkbenchTabs(overlay, pack) {
+    const counts = [getWorkbenchPresentationRows().length, getLoredeckWorkbenchRegistryCount(pack), 0, getSourceFileCount(['loading', 'error'].includes(loredeckWorkbenchCache.status) ? null : loredeckWorkbenchCache.source)];
+    const labels = ['Lorecards', 'Registries', 'Health', 'Files'];
+    overlay.querySelectorAll('.saga-lore-workbench-mode-tab').forEach((button, index) => {
+        button.textContent = counts[index] ? `${labels[index]} (${counts[index]})` : labels[index];
+        button.classList.toggle('saga-lore-workbench-mode-tab-active', button.dataset.workbenchTab === loredeckWorkbenchActiveTab);
+    });
+}
+
+async function mountLorecardsView(view) {
+    const token = workbenchLifetime.captureView(view.host);
+    view.pending = token;
+    let reportedError = null;
+    try {
+        const module = await loadWorkbenchViewModule();
+        if (!workbenchLifetime.isViewCurrent(token) || workbenchView !== view || loredeckWorkbenchActiveTab !== 'lorecards') return;
+        disposeRuntimeTooltips(view.host);
+        view.host.replaceChildren();
+        const actions = createWorkbenchViewActions();
+        actions.onError = error => { reportedError = error; reportWorkbenchViewError(error); };
+        view.handle = module.mount(view.host, workbenchModel, actions);
+    } catch (error) {
+        if (workbenchLifetime.isViewCurrent(token) && reportedError !== error) reportWorkbenchViewError(error);
+    } finally {
+        if (view.pending === token) view.pending = null;
+    }
+}
+
+function mountWorkbenchLeaf(node, build, update = () => {}, initialSnapshot = null) {
+    let disposed = false;
+    try {
+        const content = build(node);
+        if (content !== node) node.append(...content.childNodes);
+        if (initialSnapshot) update(initialSnapshot);
+    } catch (error) {
+        disposeWorkbenchLeaf(node);
+        throw error;
+    }
+    return {
+        update,
+        dispose() {
+            if (disposed) return;
+            disposed = true;
+            disposeWorkbenchLeaf(node);
+        },
+    };
+}
+
+function disposeWorkbenchLeaf(node) {
+    for (const form of node.querySelectorAll('.saga-loredeck-workbench-editor-form')) workbenchFormDisposers.get(form)?.();
+    disposeRuntimeTooltips(node);
+    node.replaceChildren();
+}
+
+function createWorkbenchViewActions() {
+    return {
+        onError: reportWorkbenchViewError,
+        tooltip(node, text) {
+            const tooltip = createManagedTooltip(node, text);
+            return { update: text => tooltip.update(text), destroy: () => tooltip.dispose() };
+        },
+        inspectRow(id, event) {
+            loredeckWorkbenchSelectedEntryId = id;
+            const row = workbenchModel.logicalRows.find(row => row.id === id);
+            if (workbenchModel.editable && !row?.draft && (event.shiftKey || event.ctrlKey || event.metaKey)) {
+                toggleLoredeckWorkbenchBulkSelection(id, workbenchModel.logicalRows, { range: event.shiftKey, additive: event.ctrlKey || event.metaKey });
+            }
+            renderLoredeckWorkbench();
+        },
+        toggleRow(id, event) {
+            toggleLoredeckWorkbenchBulkSelection(id, workbenchModel.logicalRows, { range: event.shiftKey, additive: true });
+            renderLoredeckWorkbench();
+        },
+        toggleHeader() {
+            if (workbenchModel.headerChecked) clearLoredeckWorkbenchBulkSelection(workbenchModel.logicalIds);
+            else selectLoredeckWorkbenchVisibleRows(workbenchModel.logicalRows);
+        },
+        setQuery(value) { loredeckWorkbenchQuery = value; renderLoredeckWorkbench(); },
+        setFilter(name, value) {
+            if (name === 'relevance') loredeckWorkbenchRelevanceFilter = value || 'all';
+            if (name === 'category') loredeckWorkbenchCategoryFilter = value || 'all';
+            if (name === 'status') loredeckWorkbenchStatusFilter = value || 'active';
+            renderLoredeckWorkbench();
+        },
+        mountControls(node, model) {
+            const handle = mountWorkbenchLeaf(node, () => createLoredeckWorkbenchControls(model.pack, model.logicalRows, node, model), next => {
+                const search = node.querySelector('.saga-lore-workbench-search');
+                if (search.value !== next.query) search.value = next.query;
+                node.querySelector('.saga-lore-workbench-count').textContent = `${next.matchCount} of ${next.totalCount} Lorecards`;
+                const controls = node.querySelectorAll('.saga-lore-workbench-select');
+                controls[0].value = next.filters.relevance;
+                controls[1].updateOptions(next.categoryOptions);
+                controls[1].value = next.filters.category;
+                controls[2].value = next.filters.status;
+            }, model);
+            return handle;
+        },
+        mountBulkToolbar(node, model) {
+            const pack = { ...model.pack };
+            const handle = mountWorkbenchLeaf(node, () => createLoredeckWorkbenchBulkToolbar(pack, model.logicalRows, node), next => {
+                Object.assign(pack, next.pack);
+                const count = next.selectedIds.length;
+                node.querySelector('.saga-loredeck-workbench-bulk-summary').textContent = count ? `${count} selected` : 'No bulk selection';
+                for (const button of [...node.querySelectorAll('button')].slice(2)) {
+                    if (button.dataset.sagaLoredeckActionBusy || button.dataset.sagaActionBusy) continue;
+                    button.disabled = !count;
+                    button.classList.toggle('saga-disabled-like', !count);
+                }
+            }, model);
+            return handle;
+        },
+        mountTableHeader(node, model) {
+            const handle = mountWorkbenchLeaf(node, () => createLoredeckWorkbenchTableHeader(model.logicalRows, model.editable, node), next => {
+                const box = node.querySelector('[role="checkbox"]');
+                if (!box) return;
+                box.textContent = next.headerChecked ? 'x' : '';
+                box.setAttribute('aria-checked', String(next.headerChecked));
+                box.classList.toggle('saga-loredeck-workbench-select-box-checked', next.headerChecked);
+                addTooltip(box, next.headerChecked ? 'Clear visible Lorecard selection.' : 'Select all visible Lorecards.');
+            }, model);
+            return handle;
+        },
+        mountDetail(node, model) {
+            const pack = { ...model.pack };
+            const selected = model.selectedRow ? { ...model.selectedRow } : null;
+            return mountWorkbenchLeaf(node, () => selected && model.editable
+                ? createLoredeckWorkbenchEditableDetail(pack, selected, node)
+                : createLoredeckWorkbenchDetail(pack, model.logicalRows, node), next => {
+                const entryChanged = selected?.entry !== next.selectedRow?.entry;
+                const disabledChanged = selected?.disabled !== next.selectedRow?.disabled;
+                const sourceChanged = selected?.sourceFile !== next.selectedRow?.sourceFile;
+                Object.assign(pack, next.pack);
+                if (selected && next.selectedRow) Object.assign(selected, next.selectedRow);
+                if (next.editable && selected && !selected.draft && entryChanged && next.cacheStatus === 'loaded' && !next.error) {
+                    reconcileWorkbenchEditorBuffer(node.querySelector('.saga-loredeck-workbench-editor-form'), selected);
+                }
+                if (!next.editable && entryChanged) {
+                    disposeWorkbenchLeaf(node);
+                    createLoredeckWorkbenchDetail(pack, next.logicalRows, node);
+                } else if (next.editable && selected && !selected.draft && disabledChanged) {
+                    const chip = node.querySelector('.saga-loredeck-row-meta')?.firstElementChild;
+                    disposeRuntimeTooltips(chip);
+                    chip?.replaceWith(createStatusPill(selected.disabled ? 'Disabled' : 'Editable', selected.disabled ? 'Saving this Lorecard will restore it.' : 'Manual field edits save directly to this Loredeck.', { tone: selected.disabled ? 'muted' : 'success', kind: 'status' }));
+                }
+                if (next.editable && selected && sourceChanged) {
+                    const chip = node.querySelector('.saga-loredeck-row-meta')?.children[1];
+                    disposeRuntimeTooltips(chip);
+                    chip?.replaceWith(createStatusPill(selected.sourceFile || 'embedded', 'Source file for this Lorecard.', { tone: 'source', kind: 'source', maxChars: 36 }));
+                }
+                // Dirty/composing/newer fields remain explicit DOM buffers.
+                // Pristine and acknowledged values accept authoritative reloads.
+            });
+        },
+    };
 }
 
 function createLoredeckWorkbenchHeader(pack = null) {
@@ -206,21 +503,7 @@ function createLoredeckWorkbenchHeader(pack = null) {
 
     const chips = document.createElement('div');
     chips.className = 'saga-loredeck-workbench-header-chips saga-loredeck-row-meta';
-    if (pack?.packId) {
-        appendLoredeckStatusPills(chips, [
-            [getLoredeckTypeLabel(pack.packId), 'Loredeck source type.', { tone: 'source', kind: 'source' }],
-            [`${loredeckWorkbenchCache.rows.length} Lorecards`, 'Loaded Lorecards in this workbench cache.', { kind: 'count' }],
-        ]);
-        const savePill = createStatusPill(getLoredeckWorkbenchSaveStateLabel(pack), getLoredeckWorkbenchSaveTooltip(pack), { tone: pack?.type === 'bundled' ? 'muted' : 'success', kind: 'status' });
-        savePill.dataset.loredeckWorkbenchSaveChip = 'true';
-        chips.appendChild(savePill);
-        appendLoredeckStatusPills(chips, [
-            { text: 'Loading...', tooltip: 'Lorecards are loading from this Loredeck source.', show: loredeckWorkbenchCache.status === 'loading', tone: 'info' },
-            { text: 'Load failed', tooltip: loredeckWorkbenchCache.error, show: !!loredeckWorkbenchCache.error, tone: 'danger', kind: 'severity' },
-        ]);
-    } else {
-        appendLoredeckStatusPills(chips, [['No deck', 'No Loredeck is selected.', { tone: 'muted' }]]);
-    }
+    fillLoredeckWorkbenchHeaderChips(chips, pack);
     titleWrap.appendChild(chips);
     header.appendChild(titleWrap);
 
@@ -235,7 +518,7 @@ function createLoredeckWorkbenchHeader(pack = null) {
         }));
         if (pack.type === 'bundled') {
             actions.appendChild(createButton('Duplicate to Edit', 'Create an editable Custom copy of this Bundled Loredeck.', () => {
-                openDuplicateLoredeckDialog(pack);
+                openDuplicateLoredeckDialog(loredeckWorkbenchPack?.packId === pack.packId ? loredeckWorkbenchPack : pack);
             }, 'saga-primary-button'));
         } else {
             actions.appendChild(createButton('New Lorecard', 'Create a new Lorecard directly in this editable Loredeck.', () => {
@@ -246,6 +529,25 @@ function createLoredeckWorkbenchHeader(pack = null) {
     actions.appendChild(createButton('Close', 'Close the Loredeck Workbench.', closeLoredeckWorkbench, 'saga-small-button saga-lore-workbench-close'));
     header.appendChild(actions);
     return header;
+}
+
+function fillLoredeckWorkbenchHeaderChips(chips, pack) {
+    chips.dataset.workbenchState = getWorkbenchHeaderStateKey(pack);
+    if (pack?.packId) {
+        appendLoredeckStatusPills(chips, [
+            [getLoredeckTypeLabel(pack.packId), 'Loredeck source type.', { tone: 'source', kind: 'source' }],
+            [`${getWorkbenchPresentationRows().length} Lorecards`, 'Loaded Lorecards in this workbench cache.', { kind: 'count' }],
+        ]);
+        const savePill = createStatusPill(getLoredeckWorkbenchSaveStateLabel(pack), getLoredeckWorkbenchSaveTooltip(pack), { tone: pack?.type === 'bundled' ? 'muted' : 'success', kind: 'status' });
+        savePill.dataset.loredeckWorkbenchSaveChip = 'true';
+        chips.appendChild(savePill);
+        appendLoredeckStatusPills(chips, [
+            { text: 'Loading...', tooltip: 'Lorecards are loading from this Loredeck source.', show: loredeckWorkbenchCache.status === 'loading', tone: 'info' },
+            { text: 'Load failed', tooltip: loredeckWorkbenchCache.error, show: !!loredeckWorkbenchCache.error, tone: 'danger', kind: 'severity' },
+        ]);
+    } else {
+        appendLoredeckStatusPills(chips, [['No deck', 'No Loredeck is selected.', { tone: 'muted' }]]);
+    }
 }
 
 function getLoredeckWorkbenchSaveStateLabel(pack = {}) {
@@ -276,14 +578,15 @@ function createLoredeckWorkbenchTabs() {
     const tabs = document.createElement('div');
     tabs.className = 'saga-lore-workbench-mode-tabs saga-loredeck-workbench-mode-tabs';
     for (const [id, label, count, tip] of [
-        ['lorecards', 'Lorecards', loredeckWorkbenchCache.rows.length, 'Browse Lorecards inside this Loredeck.'],
-        ['registries', 'Registries', getLoredeckWorkbenchRegistryCount(getWorkbenchPack()), 'Manage deck-owned tag and timeline registry metadata.'],
+        ['lorecards', 'Lorecards', getWorkbenchPresentationRows().length, 'Browse Lorecards inside this Loredeck.'],
+        ['registries', 'Registries', getLoredeckWorkbenchRegistryCount(loredeckWorkbenchPack), 'Manage deck-owned tag and timeline registry metadata.'],
         ['health', 'Health', 0, 'Use Open Pack Health for the full Pack Health Center in this phase.'],
-        ['files', 'Files', getSourceFileCount(loredeckWorkbenchCache.source), 'Package file inspection will be expanded after the browser foundation.'],
+        ['files', 'Files', getSourceFileCount(['loading', 'error'].includes(loredeckWorkbenchCache.status) ? null : loredeckWorkbenchCache.source), 'Package file inspection will be expanded after the browser foundation.'],
     ]) {
         const btn = document.createElement('button');
         btn.type = 'button';
         btn.className = 'saga-lore-workbench-mode-tab';
+        btn.dataset.workbenchTab = id;
         if (id === loredeckWorkbenchActiveTab) btn.classList.add('saga-lore-workbench-mode-tab-active');
         btn.textContent = count ? `${label} (${count})` : label;
         btn.disabled = !['lorecards', 'registries'].includes(id);
@@ -297,41 +600,6 @@ function createLoredeckWorkbenchTabs() {
         tabs.appendChild(btn);
     }
     return tabs;
-}
-
-function createLoredeckWorkbenchActiveView(pack = {}) {
-    if (loredeckWorkbenchActiveTab === 'registries') return createLoredeckWorkbenchRegistriesView(pack);
-    return createLoredeckWorkbenchLorecardsView(pack);
-}
-
-function createLoredeckWorkbenchLorecardsView(pack = {}) {
-    const view = document.createElement('div');
-    view.className = 'saga-lore-workbench-view saga-loredeck-workbench-view';
-
-    view.appendChild(createLoredeckWorkbenchControls(pack));
-
-    if (loredeckWorkbenchCache.status === 'loading') {
-        view.appendChild(createEmptyMessage('Loading Lorecards...'));
-        return view;
-    }
-    if (loredeckWorkbenchCache.error) {
-        view.appendChild(createEmptyMessage(loredeckWorkbenchCache.error));
-        return view;
-    }
-
-    const rows = getFilteredLoredeckWorkbenchRows();
-    ensureLoredeckWorkbenchSelection(rows);
-    reconcileLoredeckWorkbenchBulkSelection();
-    if (isLoredeckWorkbenchEditablePack(pack)) {
-        view.appendChild(createLoredeckWorkbenchBulkToolbar(pack, rows));
-    }
-
-    const main = document.createElement('div');
-    main.className = 'saga-lore-workbench-main saga-loredeck-workbench-main';
-    main.appendChild(createLoredeckWorkbenchTable(rows, pack));
-    main.appendChild(createLoredeckWorkbenchDetail(pack, rows));
-    view.appendChild(main);
-    return view;
 }
 
 function createLoredeckWorkbenchRegistriesView(pack = {}) {
@@ -392,16 +660,18 @@ function createLoredeckWorkbenchTagRegistryPanel(pack = {}, tagRegistry = normal
     search.className = 'saga-loredeck-workbench-registry-search';
     addTooltip(search, 'Search tag IDs, labels, descriptions, aliases, and parents.');
     search.addEventListener('input', () => {
-        preserveInputFocusAfterRender(search, `#${LOREDECK_WORKBENCH_ID} .saga-loredeck-workbench-registry-search`, () => {
+        const owner = workbenchLifetime.captureView(workbenchView?.host);
+        preserveInputFocusAfterRender(search, () => workbenchLifetime.isViewCurrent(owner)
+            ? document.querySelector(`#${LOREDECK_WORKBENCH_ID} .saga-loredeck-workbench-registry-search`) : null, () => {
             loredeckWorkbenchRegistryQuery = search.value;
             renderLoredeckWorkbench();
-        });
+        }, { defer: false });
     });
     controls.appendChild(search);
     controls.appendChild(createButton('New Tag', 'Prepare a blank tag definition form.', () => {
         loredeckWorkbenchRegistryQuery = '';
         renderLoredeckWorkbench();
-        requestAnimationFrame(() => document.querySelector(`#${LOREDECK_WORKBENCH_ID} [name="tagId"]`)?.focus?.());
+        scheduleWorkbenchFrame(() => document.querySelector(`#${LOREDECK_WORKBENCH_ID} [name="tagId"]`)?.focus?.());
     }, pack.type === 'bundled' ? '' : 'saga-primary-button'));
     panel.appendChild(controls);
 
@@ -493,10 +763,13 @@ function replaceLoredeckWorkbenchRegistryForm(row, pack, tag) {
     if (!panel || !oldForm) return;
     const nextForm = createLoredeckWorkbenchTagRegistryForm(pack, tag);
     oldForm.replaceWith(nextForm);
-    requestAnimationFrame(() => nextForm.querySelector('[name="tagLabel"]')?.focus?.());
+    scheduleWorkbenchFrame(() => nextForm.querySelector('[name="tagLabel"]')?.focus?.());
 }
 
 async function saveLoredeckWorkbenchTagDefinition(pack = {}, form = null, button = null) {
+    const owner = workbenchLifetime.captureSession();
+    pack = { ...pack };
+    const setSaveState = (status, message, options = {}) => setLoredeckWorkbenchSaveState(status, message, { ...options, packId: pack.packId, viewOwner: owner });
     if (!form || pack.type === 'bundled') return false;
     const id = normalizeWorkbenchTagId(form.querySelector('[name="tagId"]')?.value || '');
     if (!id) {
@@ -512,7 +785,7 @@ async function saveLoredeckWorkbenchTagDefinition(pack = {}, form = null, button
     const restoreBusy = setLoredeckActionButtonBusy(button, 'Saving...', { fallbackLabel: 'Save Tag' });
     try {
         const freshPack = getWorkbenchPack(pack.packId) || pack;
-        setLoredeckWorkbenchSaveState('saving', `Saving tag ${id}...`);
+        setSaveState('saving', `Saving tag ${id}...`);
         const saved = persistLoredeckLibraryRecordMutation(freshPack, next => {
             const registry = normalizeWorkbenchTagRegistry(next.tagRegistry);
             registry.tags[id] = def;
@@ -522,11 +795,12 @@ async function saveLoredeckWorkbenchTagDefinition(pack = {}, form = null, button
             errorMessage: 'Loredeck tag registry save failed.',
         });
         if (!saved) {
-            setLoredeckWorkbenchSaveState('failed', `Could not save tag ${id}.`);
+            setSaveState('failed', `Could not save tag ${id}.`);
             return false;
         }
-        setLoredeckWorkbenchSaveState('saved', `Saved tag ${id}.`, { render: false, packId: freshPack.packId });
-        renderLoredeckWorkbench();
+        refreshWorkbenchPackAfterMutation(owner, pack.packId);
+        setSaveState('saved', `Saved tag ${id}.`, { render: false, packId: freshPack.packId });
+        if (workbenchLifetime.isSessionCurrent(owner)) renderLoredeckWorkbench();
         return true;
     } finally {
         restoreBusy();
@@ -534,6 +808,9 @@ async function saveLoredeckWorkbenchTagDefinition(pack = {}, form = null, button
 }
 
 async function deleteLoredeckWorkbenchTagDefinition(pack = {}, tagId = '', button = null) {
+    const owner = workbenchLifetime.captureSession();
+    pack = { ...pack };
+    const setSaveState = (status, message, options = {}) => setLoredeckWorkbenchSaveState(status, message, { ...options, packId: pack.packId, viewOwner: owner });
     const id = normalizeWorkbenchTagId(tagId);
     if (!id || pack.type === 'bundled') return false;
     return withLoredeckConfirmedActionButton(button, {
@@ -543,7 +820,7 @@ async function deleteLoredeckWorkbenchTagDefinition(pack = {}, tagId = '', butto
         cancelValue: false,
     }, async () => {
         const freshPack = getWorkbenchPack(pack.packId) || pack;
-        setLoredeckWorkbenchSaveState('saving', `Deleting tag ${id}...`);
+        setSaveState('saving', `Deleting tag ${id}...`);
         const saved = persistLoredeckLibraryRecordMutation(freshPack, next => {
             const registry = normalizeWorkbenchTagRegistry(next.tagRegistry);
             delete registry.tags[id];
@@ -553,11 +830,12 @@ async function deleteLoredeckWorkbenchTagDefinition(pack = {}, tagId = '', butto
             errorMessage: 'Loredeck tag registry delete failed.',
         });
         if (!saved) {
-            setLoredeckWorkbenchSaveState('failed', `Could not delete tag ${id}.`);
+            setSaveState('failed', `Could not delete tag ${id}.`);
             return false;
         }
-        setLoredeckWorkbenchSaveState('saved', `Deleted tag ${id}.`, { render: false, packId: freshPack.packId });
-        renderLoredeckWorkbench();
+        refreshWorkbenchPackAfterMutation(owner, pack.packId);
+        setSaveState('saved', `Deleted tag ${id}.`, { render: false, packId: freshPack.packId });
+        if (workbenchLifetime.isSessionCurrent(owner)) renderLoredeckWorkbench();
         return true;
     });
 }
@@ -725,7 +1003,7 @@ function replaceLoredeckWorkbenchTimelineForm(source, pack = {}, kind = 'anchor'
     if (!slot) return;
     const form = createLoredeckWorkbenchTimelineRegistryForm(pack, kind, item);
     slot.replaceChildren(form);
-    requestAnimationFrame(() => form.querySelector(item?.id ? '[name="timelineLabel"]' : '[name="timelineId"]')?.focus?.());
+    scheduleWorkbenchFrame(() => form.querySelector(item?.id ? '[name="timelineLabel"]' : '[name="timelineId"]')?.focus?.());
 }
 
 function collectLoredeckWorkbenchTimelineForm(kind = 'anchor', form = null) {
@@ -765,6 +1043,9 @@ function collectLoredeckWorkbenchTimelineForm(kind = 'anchor', form = null) {
 }
 
 async function saveLoredeckWorkbenchTimelineItem(pack = {}, kind = 'anchor', form = null, button = null) {
+    const owner = workbenchLifetime.captureSession();
+    pack = { ...pack };
+    const setSaveState = (status, message, options = {}) => setLoredeckWorkbenchSaveState(status, message, { ...options, packId: pack.packId, viewOwner: owner });
     if (!form || !isLoredeckWorkbenchEditablePack(pack)) return false;
     const normalizedKind = kind === 'window' ? 'window' : 'anchor';
     const item = collectLoredeckWorkbenchTimelineForm(normalizedKind, form);
@@ -773,7 +1054,7 @@ async function saveLoredeckWorkbenchTimelineItem(pack = {}, kind = 'anchor', for
     const restoreBusy = setLoredeckActionButtonBusy(button, 'Saving...', { fallbackLabel: 'Save' });
     try {
         const freshPack = getWorkbenchPack(pack.packId) || pack;
-        setLoredeckWorkbenchSaveState('saving', `Saving ${normalizedKind} ${item.id}...`);
+        setSaveState('saving', `Saving ${normalizedKind} ${item.id}...`);
         const saved = persistLoredeckLibraryRecordMutation(freshPack, next => {
             const registry = normalizeWorkbenchTimelineRegistry(next.timelineRegistry);
             if (normalizedKind === 'window') {
@@ -789,11 +1070,12 @@ async function saveLoredeckWorkbenchTimelineItem(pack = {}, kind = 'anchor', for
             errorMessage: 'Loredeck timeline registry save failed.',
         });
         if (!saved) {
-            setLoredeckWorkbenchSaveState('failed', `Could not save ${normalizedKind} ${item.id}.`);
+            setSaveState('failed', `Could not save ${normalizedKind} ${item.id}.`);
             return false;
         }
-        setLoredeckWorkbenchSaveState('saved', `Saved ${normalizedKind} ${item.id}.`, { render: false, packId: freshPack.packId });
-        renderLoredeckWorkbench();
+        refreshWorkbenchPackAfterMutation(owner, pack.packId);
+        setSaveState('saved', `Saved ${normalizedKind} ${item.id}.`, { render: false, packId: freshPack.packId });
+        if (workbenchLifetime.isSessionCurrent(owner)) renderLoredeckWorkbench();
         return true;
     } finally {
         restoreBusy();
@@ -801,6 +1083,9 @@ async function saveLoredeckWorkbenchTimelineItem(pack = {}, kind = 'anchor', for
 }
 
 async function deleteLoredeckWorkbenchTimelineItem(pack = {}, kind = 'anchor', itemId = '', button = null) {
+    const owner = workbenchLifetime.captureSession();
+    pack = { ...pack };
+    const setSaveState = (status, message, options = {}) => setLoredeckWorkbenchSaveState(status, message, { ...options, packId: pack.packId, viewOwner: owner });
     const normalizedKind = kind === 'window' ? 'window' : 'anchor';
     const id = normalizeWorkbenchTimelineId(itemId);
     if (!id || !isLoredeckWorkbenchEditablePack(pack)) return false;
@@ -811,7 +1096,7 @@ async function deleteLoredeckWorkbenchTimelineItem(pack = {}, kind = 'anchor', i
         cancelValue: false,
     }, async () => {
         const freshPack = getWorkbenchPack(pack.packId) || pack;
-        setLoredeckWorkbenchSaveState('saving', `Deleting ${normalizedKind} ${id}...`);
+        setSaveState('saving', `Deleting ${normalizedKind} ${id}...`);
         const saved = persistLoredeckLibraryRecordMutation(freshPack, next => {
             const registry = normalizeWorkbenchTimelineRegistry(next.timelineRegistry);
             if (normalizedKind === 'window') {
@@ -827,11 +1112,12 @@ async function deleteLoredeckWorkbenchTimelineItem(pack = {}, kind = 'anchor', i
             errorMessage: 'Loredeck timeline registry delete failed.',
         });
         if (!saved) {
-            setLoredeckWorkbenchSaveState('failed', `Could not delete ${normalizedKind} ${id}.`);
+            setSaveState('failed', `Could not delete ${normalizedKind} ${id}.`);
             return false;
         }
-        setLoredeckWorkbenchSaveState('saved', `Deleted ${normalizedKind} ${id}.`, { render: false, packId: freshPack.packId });
-        renderLoredeckWorkbench();
+        refreshWorkbenchPackAfterMutation(owner, pack.packId);
+        setSaveState('saved', `Deleted ${normalizedKind} ${id}.`, { render: false, packId: freshPack.packId });
+        if (workbenchLifetime.isSessionCurrent(owner)) renderLoredeckWorkbench();
         return true;
     });
 }
@@ -885,9 +1171,9 @@ function sortWorkbenchTimelineItems(list = [], kind = 'anchor') {
     });
 }
 
-function createLoredeckWorkbenchControls(pack = {}) {
-    const controls = document.createElement('div');
-    controls.className = 'saga-lore-workbench-controls saga-loredeck-workbench-controls';
+function createLoredeckWorkbenchControls(pack = {}, rows = workbenchModel?.logicalRows || [], target = null, presentation = workbenchModel) {
+    const controls = target || document.createElement('div');
+    if (!target) controls.className = 'saga-lore-workbench-controls saga-loredeck-workbench-controls';
 
     controls.appendChild(createLoredeckSearchInput({
         className: 'saga-lore-workbench-search',
@@ -895,10 +1181,8 @@ function createLoredeckWorkbenchControls(pack = {}) {
         value: loredeckWorkbenchQuery,
         tooltip: 'Search by Lorecard title, ID, summary, tags, category, Context, or source file.',
         onInput: (value, input) => {
-            preserveInputFocusAfterRender(input, `#${LOREDECK_WORKBENCH_ID} .saga-lore-workbench-search`, () => {
-                loredeckWorkbenchQuery = value;
-                renderLoredeckWorkbench();
-            });
+            loredeckWorkbenchQuery = value;
+            renderLoredeckWorkbench();
         },
     }));
 
@@ -906,7 +1190,7 @@ function createLoredeckWorkbenchControls(pack = {}) {
         loredeckWorkbenchRelevanceFilter = value || 'all';
         renderLoredeckWorkbench();
     }));
-    controls.appendChild(createWorkbenchSelect('Category', loredeckWorkbenchCategoryFilter, getCategoryFilterOptions(), value => {
+    controls.appendChild(createWorkbenchSelect('Category', loredeckWorkbenchCategoryFilter, presentation.categoryOptions, value => {
         loredeckWorkbenchCategoryFilter = value || 'all';
         renderLoredeckWorkbench();
     }));
@@ -915,10 +1199,9 @@ function createLoredeckWorkbenchControls(pack = {}) {
         renderLoredeckWorkbench();
     }));
 
-    const filtered = getFilteredLoredeckWorkbenchRows();
     controls.appendChild(createLoredeckFilterCount({
         className: 'saga-lore-workbench-count',
-        text: `${filtered.length} of ${loredeckWorkbenchCache.rows.length} Lorecards`,
+        text: `${presentation.matchCount} of ${presentation.totalCount} Lorecards`,
         tooltip: `Current filters for ${pack.title || pack.packId}.`,
     }));
     return controls;
@@ -935,62 +1218,14 @@ function createWorkbenchSelect(labelText, value, options, onChange) {
     });
 }
 
-function createLoredeckWorkbenchTable(rows = [], pack = {}) {
-    const selectable = isLoredeckWorkbenchEditablePack(pack);
-    const table = document.createElement('div');
-    table.className = 'saga-lore-workbench-table saga-loredeck-workbench-table';
-    if (selectable) table.classList.add('saga-loredeck-workbench-selectable-table');
-
-    const header = document.createElement('div');
-    header.className = 'saga-lore-workbench-row saga-lore-workbench-row-header';
+function createLoredeckWorkbenchTableHeader(rows = [], selectable = false, target = null) {
+    const header = target || document.createElement('div');
     if (selectable) header.appendChild(createLoredeckWorkbenchSelectHeaderCell(rows));
     header.appendChild(createWorkbenchCell('Lorecard'));
     header.appendChild(createWorkbenchCell('Type'));
     header.appendChild(createWorkbenchCell('Relevance'));
     header.appendChild(createWorkbenchCell('State / Source'));
-    table.appendChild(header);
-
-    if (!rows.length) {
-        table.appendChild(createEmptyMessage('No Lorecards match the current filters.'));
-        return table;
-    }
-
-    const visible = rows.slice(0, 500);
-    for (const row of visible) {
-        table.appendChild(createLoredeckWorkbenchRow(row, rows, selectable));
-    }
-    if (visible.length < rows.length) {
-        const more = document.createElement('div');
-        more.className = 'saga-lore-workbench-row-note';
-        more.textContent = `Showing ${visible.length} of ${rows.length}. Narrow search or filters to inspect more.`;
-        table.appendChild(more);
-    }
-    return table;
-}
-
-function createLoredeckWorkbenchRow(row = {}, rows = [], selectable = false) {
-    const entry = row.entry || {};
-    const el = document.createElement('button');
-    el.type = 'button';
-    el.className = 'saga-lore-workbench-row saga-lore-workbench-entry-row saga-loredeck-workbench-entry-row';
-    if (row.draft) el.classList.add('saga-loredeck-workbench-draft-row');
-    if (row.disabled) el.classList.add('saga-loredeck-workbench-disabled-row');
-    if (!row.draft && loredeckWorkbenchBulkSelection.has(row.id)) el.classList.add('saga-loredeck-workbench-row-selected');
-    if (row.id === loredeckWorkbenchSelectedEntryId) el.classList.add('saga-lore-workbench-row-active');
-    addTooltip(el, `Inspect ${entry.title || row.id}.`);
-    el.addEventListener('click', event => {
-        loredeckWorkbenchSelectedEntryId = row.id;
-        if (selectable && !row.draft && (event.shiftKey || event.ctrlKey || event.metaKey)) {
-            toggleLoredeckWorkbenchBulkSelection(row.id, rows, { range: event.shiftKey, additive: event.ctrlKey || event.metaKey });
-        }
-        renderLoredeckWorkbench();
-    });
-    if (selectable) el.appendChild(createLoredeckWorkbenchSelectCell(row, rows));
-    el.appendChild(createWorkbenchCell(entry.title || row.id, row.id));
-    el.appendChild(createWorkbenchCell(getEntryCategory(entry)));
-    el.appendChild(createWorkbenchCell(getEntryRelevance(entry)));
-    el.appendChild(createWorkbenchCell(row.disabled ? 'disabled' : 'active', row.sourceFile || 'embedded'));
-    return el;
+    return header;
 }
 
 function createWorkbenchCell(text, subText = '') {
@@ -1023,36 +1258,26 @@ function createLoredeckWorkbenchSelectHeaderCell(rows = []) {
     addTooltip(box, checked ? 'Clear visible Lorecard selection.' : 'Select all visible Lorecards.');
     box.addEventListener('click', event => {
         event.stopPropagation();
-        if (checked) clearLoredeckWorkbenchBulkSelection(visibleIds);
-        else selectLoredeckWorkbenchVisibleRows(rows);
+        if (workbenchModel.headerChecked) clearLoredeckWorkbenchBulkSelection(workbenchModel.logicalIds);
+        else selectLoredeckWorkbenchVisibleRows(workbenchModel.logicalRows);
     });
     cell.appendChild(box);
     return cell;
 }
 
-function createLoredeckWorkbenchSelectCell(row = {}, rows = []) {
-    const cell = document.createElement('span');
-    cell.className = 'saga-loredeck-workbench-select-cell';
-    if (row.draft) return cell;
-    const checked = loredeckWorkbenchBulkSelection.has(row.id);
-    const box = document.createElement('span');
-    box.className = `saga-loredeck-workbench-select-box${checked ? ' saga-loredeck-workbench-select-box-checked' : ''}`;
-    box.textContent = checked ? 'x' : '';
-    box.setAttribute('role', 'checkbox');
-    box.setAttribute('aria-checked', checked ? 'true' : 'false');
-    addTooltip(box, checked ? 'Remove this Lorecard from bulk selection.' : 'Add this Lorecard to bulk selection.');
-    box.addEventListener('click', event => {
-        event.stopPropagation();
-        toggleLoredeckWorkbenchBulkSelection(row.id, rows, { range: event.shiftKey, additive: true });
-        renderLoredeckWorkbench();
-    });
-    cell.appendChild(box);
-    return cell;
-}
-
-function createLoredeckWorkbenchBulkToolbar(pack = {}, rows = []) {
-    const toolbar = document.createElement('div');
-    toolbar.className = 'saga-loredeck-workbench-bulk-toolbar';
+function createLoredeckWorkbenchBulkToolbar(pack = {}, rows = [], target = null) {
+    const toolbar = target || document.createElement('div');
+    if (!target) toolbar.className = 'saga-loredeck-workbench-bulk-toolbar';
+    const owner = workbenchLifetime.captureSession();
+    const viewOwner = workbenchLifetime.captureView(workbenchView?.host);
+    const createActionButton = (label, tip, action, className) => createButton(label, tip, async button => {
+        try { return await action(button); }
+        finally {
+            // Shared busy helpers restore the original disabled state after the
+            // callback. Reconcile once after their finally blocks have run.
+            if (workbenchLifetime.isSessionCurrent(owner) && workbenchLifetime.isViewCurrent(viewOwner)) scheduleWorkbenchFrame(renderLoredeckWorkbench);
+        }
+    }, className);
     const selectedIds = getLoredeckWorkbenchSelectedIds();
     const selectedCount = selectedIds.length;
 
@@ -1063,35 +1288,36 @@ function createLoredeckWorkbenchBulkToolbar(pack = {}, rows = []) {
         tooltip: 'Bulk actions apply directly after confirmation.',
     }));
 
-    toolbar.appendChild(createButton('Select Visible', 'Select every visible Lorecard matching the current filters.', () => {
-        selectLoredeckWorkbenchVisibleRows(rows);
+    toolbar.appendChild(createActionButton('Select Visible', 'Select every visible Lorecard matching the current filters.', () => {
+        selectLoredeckWorkbenchVisibleRows(workbenchModel.logicalRows);
     }));
-    toolbar.appendChild(createButton('Clear', 'Clear the current bulk selection.', () => {
+    toolbar.appendChild(createActionButton('Clear', 'Clear the current bulk selection.', () => {
         clearLoredeckWorkbenchBulkSelection();
     }));
 
     const relevance = createLoredeckWorkbenchBulkSelect(getEntryRelevanceOptions(), 'normal', 'Bulk relevance tier.');
     toolbar.appendChild(relevance);
-    toolbar.appendChild(createButton('Set Relevance', 'Set the selected Lorecards to this relevance tier.', async btn => {
-        await applyLoredeckWorkbenchBulkEntryEdit(pack, 'Set Relevance', selectedIds, fields => ({ ...fields, relevance: relevance.value }), btn);
+    toolbar.appendChild(createActionButton('Set Relevance', 'Set the selected Lorecards to this relevance tier.', async btn => {
+        const value = relevance.value;
+        await applyLoredeckWorkbenchBulkEntryEdit(pack, 'Set Relevance', getLoredeckWorkbenchSelectedIds(), fields => ({ ...fields, relevance: value }), btn);
     }, selectedCount ? '' : 'saga-disabled-like'));
 
     const category = createLoredeckWorkbenchBulkInput('Category', 'character', 'Bulk category/type value.');
     toolbar.appendChild(category);
-    toolbar.appendChild(createButton('Set Category', 'Set the selected Lorecards to this category/type.', async btn => {
+    toolbar.appendChild(createActionButton('Set Category', 'Set the selected Lorecards to this category/type.', async btn => {
         const value = String(category.value || '').trim();
-        await applyLoredeckWorkbenchBulkEntryEdit(pack, 'Set Category', selectedIds, fields => ({ ...fields, category: value || fields.category }), btn, { requireValue: value, requireValueLabel: 'category' });
+        await applyLoredeckWorkbenchBulkEntryEdit(pack, 'Set Category', getLoredeckWorkbenchSelectedIds(), fields => ({ ...fields, category: value || fields.category }), btn, { requireValue: value, requireValueLabel: 'category' });
     }, selectedCount ? '' : 'saga-disabled-like'));
 
     const tag = createLoredeckWorkbenchBulkInput('Tag', 'faction:straw-hats', 'Tag to add or remove.');
     toolbar.appendChild(tag);
-    toolbar.appendChild(createButton('Add Tag', 'Add this tag to every selected Lorecard.', async btn => {
+    toolbar.appendChild(createActionButton('Add Tag', 'Add this tag to every selected Lorecard.', async btn => {
         const value = String(tag.value || '').trim();
-        await applyLoredeckWorkbenchBulkEntryEdit(pack, 'Add Tag', selectedIds, fields => ({ ...fields, tags: mergeLoredeckWorkbenchTags(fields.tags, [value]) }), btn, { requireTag: value });
+        await applyLoredeckWorkbenchBulkEntryEdit(pack, 'Add Tag', getLoredeckWorkbenchSelectedIds(), fields => ({ ...fields, tags: mergeLoredeckWorkbenchTags(fields.tags, [value]) }), btn, { requireTag: value });
     }, selectedCount ? '' : 'saga-disabled-like'));
-    toolbar.appendChild(createButton('Remove Tag', 'Remove this tag from every selected Lorecard.', async btn => {
+    toolbar.appendChild(createActionButton('Remove Tag', 'Remove this tag from every selected Lorecard.', async btn => {
         const value = String(tag.value || '').trim();
-        await applyLoredeckWorkbenchBulkEntryEdit(pack, 'Remove Tag', selectedIds, fields => ({ ...fields, tags: (fields.tags || []).filter(item => item !== value) }), btn, { requireTag: value });
+        await applyLoredeckWorkbenchBulkEntryEdit(pack, 'Remove Tag', getLoredeckWorkbenchSelectedIds(), fields => ({ ...fields, tags: (fields.tags || []).filter(item => item !== value) }), btn, { requireTag: value });
     }, selectedCount ? '' : 'saga-disabled-like'));
 
     const contextLabel = createLoredeckWorkbenchBulkInput('Context Label', 'Arlong Park Arc', 'Human-readable Context gate label.');
@@ -1106,7 +1332,7 @@ function createLoredeckWorkbenchBulkToolbar(pack = {}, rows = []) {
     toolbar.appendChild(contextTo);
     toolbar.appendChild(contextFromAnchor);
     toolbar.appendChild(contextToAnchor);
-    toolbar.appendChild(createButton('Set Context', 'Set one Context gate on every selected Lorecard.', async btn => {
+    toolbar.appendChild(createActionButton('Set Context', 'Set one Context gate on every selected Lorecard.', async btn => {
         const contextGate = buildLoredeckWorkbenchBulkContextGate({
             label: contextLabel.value,
             scope: contextScope.value,
@@ -1115,17 +1341,17 @@ function createLoredeckWorkbenchBulkToolbar(pack = {}, rows = []) {
             fromAnchor: contextFromAnchor.value,
             toAnchor: contextToAnchor.value,
         });
-        await applyLoredeckWorkbenchBulkEntryEdit(pack, 'Set Context', selectedIds, fields => ({ ...fields, context: contextGate }), btn, { requireContextGate: contextGate });
+        await applyLoredeckWorkbenchBulkEntryEdit(pack, 'Set Context', getLoredeckWorkbenchSelectedIds(), fields => ({ ...fields, context: contextGate }), btn, { requireContextGate: contextGate });
     }, selectedCount ? '' : 'saga-disabled-like'));
 
-    toolbar.appendChild(createButton('Duplicate Selected', 'Duplicate selected Lorecards as new Custom additions in this Loredeck.', async btn => {
-        await duplicateLoredeckWorkbenchSelectedEntries(pack, selectedIds, btn);
+    toolbar.appendChild(createActionButton('Duplicate Selected', 'Duplicate selected Lorecards as new Custom additions in this Loredeck.', async btn => {
+        await duplicateLoredeckWorkbenchSelectedEntries(pack, getLoredeckWorkbenchSelectedIds(), btn);
     }, selectedCount ? '' : 'saga-disabled-like'));
-    toolbar.appendChild(createButton('Restore Selected', 'Restore selected disabled Lorecards by removing them from this deck disabled list.', async btn => {
-        await restoreLoredeckWorkbenchSelectedEntries(pack, selectedIds, btn);
+    toolbar.appendChild(createActionButton('Restore Selected', 'Restore selected disabled Lorecards by removing them from this deck disabled list.', async btn => {
+        await restoreLoredeckWorkbenchSelectedEntries(pack, getLoredeckWorkbenchSelectedIds(), btn);
     }, selectedCount ? '' : 'saga-disabled-like'));
-    toolbar.appendChild(createButton('Delete Selected', 'Delete selected Custom additions or suppress selected source Lorecards in this editable Loredeck.', async btn => {
-        await deleteLoredeckWorkbenchSelectedEntries(pack, selectedIds, btn);
+    toolbar.appendChild(createActionButton('Delete Selected', 'Delete selected Custom additions or suppress selected source Lorecards in this editable Loredeck.', async btn => {
+        await deleteLoredeckWorkbenchSelectedEntries(pack, getLoredeckWorkbenchSelectedIds(), btn);
     }, selectedCount ? 'saga-danger-button' : 'saga-danger-button saga-disabled-like'));
 
     toolbar.querySelectorAll('.saga-disabled-like').forEach(btn => {
@@ -1214,8 +1440,8 @@ function getLoredeckWorkbenchRowMap() {
     return map;
 }
 
-function reconcileLoredeckWorkbenchBulkSelection() {
-    const valid = new Set(getLoredeckWorkbenchSelectableRowIds(getFilteredLoredeckWorkbenchRows()));
+function reconcileLoredeckWorkbenchBulkSelection(rows = getFilteredLoredeckWorkbenchRows()) {
+    const valid = new Set(getLoredeckWorkbenchSelectableRowIds(rows));
     loredeckWorkbenchBulkSelection = new Set([...loredeckWorkbenchBulkSelection].filter(id => valid.has(id)));
     if (loredeckWorkbenchLastSelectionId && !valid.has(loredeckWorkbenchLastSelectionId)) loredeckWorkbenchLastSelectionId = '';
 }
@@ -1268,6 +1494,10 @@ function mergeLoredeckWorkbenchTags(current = [], additions = []) {
 }
 
 async function applyLoredeckWorkbenchBulkEntryEdit(pack = {}, actionLabel = 'Bulk Edit', rawIds = [], updateFields, button = null, options = {}) {
+    const owner = workbenchLifetime.captureSession();
+    pack = { ...pack };
+    const setSaveState = (status, message, options = {}) => setLoredeckWorkbenchSaveState(status, message, { ...options, packId: pack.packId, viewOwner: owner });
+    const rowMap = getLoredeckWorkbenchRowMap();
     const selectedIds = [...new Set((rawIds || []).map(id => String(id || '').trim()).filter(Boolean))];
     if (!selectedIds.length) {
         toast('Select one or more Lorecards first.', 'warning');
@@ -1293,7 +1523,6 @@ async function applyLoredeckWorkbenchBulkEntryEdit(pack = {}, actionLabel = 'Bul
         cancelValue: false,
     }, async () => {
         const freshPack = getWorkbenchPack(pack.packId) || pack;
-        const rowMap = getLoredeckWorkbenchRowMap();
         const entryOverrides = {};
         for (const id of selectedIds) {
             const row = rowMap.get(id);
@@ -1306,7 +1535,7 @@ async function applyLoredeckWorkbenchBulkEntryEdit(pack = {}, actionLabel = 'Bul
             toast('No selected Lorecards could be updated.', 'warning');
             return false;
         }
-        setLoredeckWorkbenchSaveState('saving', `${actionLabel}: updating ${count} Lorecard${count === 1 ? '' : 's'}...`);
+        setSaveState('saving', `${actionLabel}: updating ${count} Lorecard${count === 1 ? '' : 's'}...`);
         const saved = persistLoredeckLibraryRecordMutation(freshPack, next => {
             next.entryOverrides = {
                 ...(next.entryOverrides || {}),
@@ -1320,18 +1549,25 @@ async function applyLoredeckWorkbenchBulkEntryEdit(pack = {}, actionLabel = 'Bul
             errorMessage: 'Loredeck bulk edit failed.',
         });
         if (!saved) {
-            setLoredeckWorkbenchSaveState('failed', `${actionLabel} failed.`);
+            setSaveState('failed', `${actionLabel} failed.`);
             return false;
         }
-        loredeckWorkbenchBulkSelection = new Set();
-        loredeckWorkbenchLastSelectionId = '';
-        setLoredeckWorkbenchSaveState('saved', `${actionLabel} updated ${count} Lorecard${count === 1 ? '' : 's'}.`, { render: false, packId: freshPack.packId });
-        await loadLoredeckWorkbenchRows(freshPack.packId, { force: true });
+        refreshWorkbenchPackAfterMutation(owner, pack.packId);
+        if (workbenchLifetime.isSessionCurrent(owner)) {
+            loredeckWorkbenchBulkSelection = new Set();
+            loredeckWorkbenchLastSelectionId = '';
+        }
+        setSaveState('saved', `${actionLabel} updated ${count} Lorecard${count === 1 ? '' : 's'}.`, { render: false, packId: freshPack.packId });
+        await loadLoredeckWorkbenchRows(freshPack.packId, { force: true, viewOwner: owner });
         return true;
     });
 }
 
 async function deleteLoredeckWorkbenchSelectedEntries(pack = {}, rawIds = [], button = null) {
+    const owner = workbenchLifetime.captureSession();
+    pack = { ...pack };
+    const setSaveState = (status, message, options = {}) => setLoredeckWorkbenchSaveState(status, message, { ...options, packId: pack.packId, viewOwner: owner });
+    const rowMap = getLoredeckWorkbenchRowMap();
     const selectedIds = [...new Set((rawIds || []).map(id => String(id || '').trim()).filter(Boolean))];
     if (!selectedIds.length) {
         toast('Select one or more Lorecards first.', 'warning');
@@ -1347,13 +1583,12 @@ async function deleteLoredeckWorkbenchSelectedEntries(pack = {}, rawIds = [], bu
         cancelValue: false,
     }, async () => {
         const freshPack = getWorkbenchPack(pack.packId) || pack;
-        const rowMap = getLoredeckWorkbenchRowMap();
         const affected = selectedIds.filter(id => rowMap.has(id));
         if (!affected.length) {
             toast('No selected Lorecards could be deleted.', 'warning');
             return false;
         }
-        setLoredeckWorkbenchSaveState('saving', `Deleting ${affected.length} Lorecard${affected.length === 1 ? '' : 's'}...`);
+        setSaveState('saving', `Deleting ${affected.length} Lorecard${affected.length === 1 ? '' : 's'}...`);
         const saved = persistLoredeckLibraryRecordMutation(freshPack, next => {
             next.entryOverrides = { ...(next.entryOverrides || {}) };
             const disabled = new Set(Array.isArray(next.disabledEntryIds) ? next.disabledEntryIds : []);
@@ -1369,26 +1604,33 @@ async function deleteLoredeckWorkbenchSelectedEntries(pack = {}, rawIds = [], bu
             errorMessage: 'Loredeck delete failed.',
         });
         if (!saved) {
-            setLoredeckWorkbenchSaveState('failed', 'Delete selected failed.');
+            setSaveState('failed', 'Delete selected failed.');
             return false;
         }
-        loredeckWorkbenchBulkSelection = new Set();
-        loredeckWorkbenchLastSelectionId = '';
-        if (affected.includes(loredeckWorkbenchSelectedEntryId)) loredeckWorkbenchSelectedEntryId = '';
-        setLoredeckWorkbenchSaveState('saved', `Deleted ${affected.length} Lorecard${affected.length === 1 ? '' : 's'}.`, { render: false, packId: freshPack.packId });
-        await loadLoredeckWorkbenchRows(freshPack.packId, { force: true });
+        refreshWorkbenchPackAfterMutation(owner, pack.packId);
+        if (workbenchLifetime.isSessionCurrent(owner)) {
+            loredeckWorkbenchBulkSelection = new Set();
+            loredeckWorkbenchLastSelectionId = '';
+        }
+        if (workbenchLifetime.isSessionCurrent(owner) && affected.includes(loredeckWorkbenchSelectedEntryId)) loredeckWorkbenchSelectedEntryId = '';
+        setSaveState('saved', `Deleted ${affected.length} Lorecard${affected.length === 1 ? '' : 's'}.`, { render: false, packId: freshPack.packId });
+        await loadLoredeckWorkbenchRows(freshPack.packId, { force: true, viewOwner: owner });
         return true;
     });
 }
 
 async function restoreLoredeckWorkbenchSelectedEntries(pack = {}, rawIds = [], button = null) {
+    const owner = workbenchLifetime.captureSession();
+    pack = { ...pack };
+    const setSaveState = (status, message, options = {}) => setLoredeckWorkbenchSaveState(status, message, { ...options, packId: pack.packId, viewOwner: owner });
+    const rowMap = getLoredeckWorkbenchRowMap();
     const selectedIds = [...new Set((rawIds || []).map(id => String(id || '').trim()).filter(Boolean))];
     if (!selectedIds.length) {
         toast('Select one or more Lorecards first.', 'warning');
         return false;
     }
     const disabledSelected = selectedIds.filter(id => {
-        const row = getLoredeckWorkbenchRowMap().get(id);
+        const row = rowMap.get(id);
         return row?.disabled === true;
     });
     if (!disabledSelected.length) {
@@ -1405,7 +1647,7 @@ async function restoreLoredeckWorkbenchSelectedEntries(pack = {}, rawIds = [], b
         cancelValue: false,
     }, async () => {
         const freshPack = getWorkbenchPack(pack.packId) || pack;
-        setLoredeckWorkbenchSaveState('saving', `Restoring ${disabledSelected.length} Lorecard${disabledSelected.length === 1 ? '' : 's'}...`);
+        setSaveState('saving', `Restoring ${disabledSelected.length} Lorecard${disabledSelected.length === 1 ? '' : 's'}...`);
         const saved = persistLoredeckLibraryRecordMutation(freshPack, next => {
             const restoreSet = new Set(disabledSelected);
             next.disabledEntryIds = (Array.isArray(next.disabledEntryIds) ? next.disabledEntryIds : [])
@@ -1415,18 +1657,25 @@ async function restoreLoredeckWorkbenchSelectedEntries(pack = {}, rawIds = [], b
             errorMessage: 'Loredeck restore failed.',
         });
         if (!saved) {
-            setLoredeckWorkbenchSaveState('failed', 'Restore selected failed.');
+            setSaveState('failed', 'Restore selected failed.');
             return false;
         }
-        loredeckWorkbenchBulkSelection = new Set();
-        loredeckWorkbenchLastSelectionId = '';
-        setLoredeckWorkbenchSaveState('saved', `Restored ${disabledSelected.length} Lorecard${disabledSelected.length === 1 ? '' : 's'}.`, { render: false, packId: freshPack.packId });
-        await loadLoredeckWorkbenchRows(freshPack.packId, { force: true });
+        refreshWorkbenchPackAfterMutation(owner, pack.packId);
+        if (workbenchLifetime.isSessionCurrent(owner)) {
+            loredeckWorkbenchBulkSelection = new Set();
+            loredeckWorkbenchLastSelectionId = '';
+        }
+        setSaveState('saved', `Restored ${disabledSelected.length} Lorecard${disabledSelected.length === 1 ? '' : 's'}.`, { render: false, packId: freshPack.packId });
+        await loadLoredeckWorkbenchRows(freshPack.packId, { force: true, viewOwner: owner });
         return true;
     });
 }
 
 async function duplicateLoredeckWorkbenchSelectedEntries(pack = {}, rawIds = [], button = null) {
+    const owner = workbenchLifetime.captureSession();
+    pack = { ...pack };
+    const setSaveState = (status, message, options = {}) => setLoredeckWorkbenchSaveState(status, message, { ...options, packId: pack.packId, viewOwner: owner });
+    const rowMap = getLoredeckWorkbenchRowMap();
     const selectedIds = [...new Set((rawIds || []).map(id => String(id || '').trim()).filter(Boolean))];
     if (!selectedIds.length) {
         toast('Select one or more Lorecards first.', 'warning');
@@ -1442,8 +1691,7 @@ async function duplicateLoredeckWorkbenchSelectedEntries(pack = {}, rawIds = [],
         cancelValue: false,
     }, async () => {
         const freshPack = getWorkbenchPack(pack.packId) || pack;
-        const rowMap = getLoredeckWorkbenchRowMap();
-        const existing = getLoredeckWorkbenchExistingEntryIds(freshPack);
+        const existing = getLoredeckWorkbenchExistingEntryIds(freshPack, [...rowMap.values()]);
         const entryOverrides = {};
         for (const id of selectedIds) {
             const row = rowMap.get(id);
@@ -1473,7 +1721,7 @@ async function duplicateLoredeckWorkbenchSelectedEntries(pack = {}, rawIds = [],
             toast('No selected Lorecards could be duplicated.', 'warning');
             return false;
         }
-        setLoredeckWorkbenchSaveState('saving', `Duplicating ${count} Lorecard${count === 1 ? '' : 's'}...`);
+        setSaveState('saving', `Duplicating ${count} Lorecard${count === 1 ? '' : 's'}...`);
         const saved = persistLoredeckLibraryRecordMutation(freshPack, next => {
             next.entryOverrides = {
                 ...(next.entryOverrides || {}),
@@ -1484,15 +1732,18 @@ async function duplicateLoredeckWorkbenchSelectedEntries(pack = {}, rawIds = [],
             errorMessage: 'Loredeck duplicate failed.',
         });
         if (!saved) {
-            setLoredeckWorkbenchSaveState('failed', 'Duplicate selected failed.');
+            setSaveState('failed', 'Duplicate selected failed.');
             return false;
         }
-        const duplicatedIds = Object.keys(entryOverrides);
-        loredeckWorkbenchBulkSelection = new Set(duplicatedIds);
-        loredeckWorkbenchLastSelectionId = duplicatedIds[duplicatedIds.length - 1] || '';
-        loredeckWorkbenchSelectedEntryId = loredeckWorkbenchLastSelectionId || loredeckWorkbenchSelectedEntryId;
-        setLoredeckWorkbenchSaveState('saved', `Duplicated ${count} Lorecard${count === 1 ? '' : 's'}.`, { render: false, packId: freshPack.packId });
-        await loadLoredeckWorkbenchRows(freshPack.packId, { force: true });
+        refreshWorkbenchPackAfterMutation(owner, pack.packId);
+        if (workbenchLifetime.isSessionCurrent(owner)) {
+            const duplicatedIds = Object.keys(entryOverrides);
+            loredeckWorkbenchBulkSelection = new Set(duplicatedIds);
+            loredeckWorkbenchLastSelectionId = duplicatedIds[duplicatedIds.length - 1] || '';
+            loredeckWorkbenchSelectedEntryId = loredeckWorkbenchLastSelectionId || loredeckWorkbenchSelectedEntryId;
+        }
+        setSaveState('saved', `Duplicated ${count} Lorecard${count === 1 ? '' : 's'}.`, { render: false, packId: freshPack.packId });
+        await loadLoredeckWorkbenchRows(freshPack.packId, { force: true, viewOwner: owner });
         return true;
     });
 }
@@ -1506,15 +1757,15 @@ function isLoredeckWorkbenchAdditionRow(row = {}) {
         || ['__saga_entry_overrides__', '__saga_embedded_entries__', '__saga_generated_entries__'].includes(sourceFile);
 }
 
-function createLoredeckWorkbenchDetail(pack = {}, rows = []) {
-    const detail = document.createElement('div');
-    detail.className = 'saga-lore-workbench-detail saga-loredeck-workbench-detail';
+function createLoredeckWorkbenchDetail(pack = {}, rows = [], target = null) {
+    const detail = target || document.createElement('div');
+    if (!target) detail.className = 'saga-lore-workbench-detail saga-loredeck-workbench-detail';
     const selected = rows.find(row => row.id === loredeckWorkbenchSelectedEntryId) || rows[0] || null;
     if (!selected) {
         detail.appendChild(createEmptyMessage('Select a Lorecard to inspect it.'));
         return detail;
     }
-    if (isLoredeckWorkbenchEditablePack(pack)) return createLoredeckWorkbenchEditableDetail(pack, selected);
+    if (isLoredeckWorkbenchEditablePack(pack)) return createLoredeckWorkbenchEditableDetail(pack, selected, target);
 
     const entry = selected.entry || {};
     const title = document.createElement('div');
@@ -1564,9 +1815,9 @@ function createLoredeckWorkbenchDetail(pack = {}, rows = []) {
     return detail;
 }
 
-function createLoredeckWorkbenchEditableDetail(pack = {}, selected = {}) {
-    const detail = document.createElement('div');
-    detail.className = 'saga-lore-workbench-detail saga-loredeck-workbench-detail saga-loredeck-workbench-editor-detail';
+function createLoredeckWorkbenchEditableDetail(pack = {}, selected = {}, target = null) {
+    const detail = target || document.createElement('div');
+    if (!target) detail.className = 'saga-lore-workbench-detail saga-loredeck-workbench-detail saga-loredeck-workbench-editor-detail';
     const entry = selected.entry || {};
     const fields = getLoredeckWorkbenchEntryFields(entry);
 
@@ -1600,8 +1851,14 @@ function createLoredeckWorkbenchEditableDetail(pack = {}, selected = {}) {
     form.appendChild(createLoredeckWorkbenchTextareaField('Injection Text', 'injection', fields.injection, 'Optional prompt-facing injection text. Leave blank to let Lore Text carry the entry.', { rows: 5 }));
     form.appendChild(createLoredeckWorkbenchTextareaField('Notes', 'notes', fields.notes, 'Optional editor/source notes.', { rows: 3 }));
 
-    if (selected.draft) wireLoredeckWorkbenchDraftCreate(form, pack, selected);
-    else wireLoredeckWorkbenchAutosave(form, pack, selected);
+    const draft = selected.draft ? loredeckWorkbenchDraftEntry : null;
+    if (draft?.buffer) {
+        for (const input of form.querySelectorAll('[name]')) {
+            if (Object.prototype.hasOwnProperty.call(draft.buffer, input.name)) input.value = draft.buffer[input.name];
+        }
+    }
+    const dispose = selected.draft ? wireLoredeckWorkbenchDraftCreate(form, pack, selected) : wireLoredeckWorkbenchAutosave(form, pack, selected);
+    workbenchFormDisposers.set(form, dispose);
     detail.appendChild(form);
 
     const hint = document.createElement('div');
@@ -1627,6 +1884,7 @@ function resetLoredeckWorkbenchSaveState(packId = loredeckWorkbenchPackId) {
 }
 
 function setLoredeckWorkbenchSaveState(status = 'idle', message = '', options = {}) {
+    if (Object.prototype.hasOwnProperty.call(options, 'viewOwner') && !workbenchLifetime.isSessionCurrent(options.viewOwner)) return;
     loredeckWorkbenchSaveState = {
         packId: String(options.packId || loredeckWorkbenchPackId || '').trim(),
         status,
@@ -1641,7 +1899,7 @@ function setLoredeckWorkbenchSaveState(status = 'idle', message = '', options = 
 }
 
 function refreshLoredeckWorkbenchSaveChip() {
-    const pack = getWorkbenchPack();
+    const pack = loredeckWorkbenchPack;
     const chip = document.querySelector(`#${LOREDECK_WORKBENCH_ID} [data-loredeck-workbench-save-chip="true"]`);
     if (!chip || !pack?.packId) return;
     chip.textContent = getLoredeckWorkbenchSaveStateLabel(pack);
@@ -1719,19 +1977,100 @@ function createLoredeckWorkbenchSelectField(labelText, name, value, options, tip
     return label;
 }
 
+function createWorkbenchFormListeners(form) {
+    const removers = [];
+    let active = true;
+    const inputs = [...form.querySelectorAll('[name]')];
+    const buffer = {
+        baseline: new Map(inputs.map(input => [input.name, input.value])),
+        revisions: new Map(inputs.map(input => [input.name, 0])),
+        composing: new Set(),
+        acknowledged: null,
+    };
+    workbenchFormBuffers.set(form, buffer);
+    const listeners = {
+        get active() { return active; },
+        listen(node, type, callback) {
+            node.addEventListener(type, callback);
+            removers.push(() => node.removeEventListener(type, callback));
+        },
+        dispose() {
+            if (!active) return;
+            active = false;
+            for (const remove of removers) remove();
+            workbenchFormDisposers.delete(form);
+            workbenchFormBuffers.delete(form);
+        },
+    };
+    for (const input of inputs) {
+        const revise = () => buffer.revisions.set(input.name, (buffer.revisions.get(input.name) || 0) + 1);
+        listeners.listen(input, 'input', revise);
+        listeners.listen(input, 'change', revise);
+        listeners.listen(input, 'compositionstart', () => { revise(); buffer.composing.add(input.name); });
+        listeners.listen(input, 'compositionend', () => { buffer.composing.delete(input.name); });
+    }
+    return listeners;
+}
+
+function captureWorkbenchEditorSubmission(form) {
+    const buffer = workbenchFormBuffers.get(form);
+    if (!buffer) return null;
+    return new Map([...form.querySelectorAll('[name]')].map(input => [input.name, {
+        value: input.value, revision: buffer.revisions.get(input.name) || 0,
+    }]));
+}
+
+function reconcileWorkbenchEditorBuffer(form, selected) {
+    const buffer = workbenchFormBuffers.get(form);
+    if (!buffer) return;
+    const fields = getLoredeckWorkbenchEntryFields(selected.entry);
+    const authoritative = { ...fields, tags: fields.tags.join(', ') };
+    for (const input of form.querySelectorAll('[name]')) {
+        const name = input.name;
+        const value = String(authoritative[name] ?? '');
+        const acknowledged = buffer.acknowledged?.get(name);
+        const newerThanSubmission = acknowledged && (buffer.revisions.get(name) || 0) > acknowledged.revision;
+        const pristine = input.value === buffer.baseline.get(name) && !newerThanSubmission;
+        const submitted = acknowledged && input.value === acknowledged.value && (buffer.revisions.get(name) || 0) === acknowledged.revision;
+        if (!buffer.composing.has(name) && (pristine || submitted) && input.value !== value) {
+            const { selectionStart, selectionEnd, selectionDirection, scrollTop } = input;
+            if (input.tagName === 'SELECT' && ![...input.options].some(option => option.value === value)) {
+                const option = document.createElement('option');
+                option.value = value;
+                option.textContent = humanizeScopeKey(value);
+                input.appendChild(option);
+            }
+            input.value = value;
+            if (typeof selectionStart === 'number' && typeof input.setSelectionRange === 'function') {
+                try { input.setSelectionRange(Math.min(selectionStart, value.length), Math.min(selectionEnd, value.length), selectionDirection || 'none'); } catch { /* Non-text input. */ }
+            }
+            input.scrollTop = scrollTop;
+        }
+        buffer.baseline.set(name, value);
+    }
+    buffer.acknowledged = null;
+}
+
 function wireLoredeckWorkbenchAutosave(form, pack, selected) {
+    const owner = workbenchLifetime.captureSession();
+    const listeners = createWorkbenchFormListeners(form);
+    let saving = false;
     const save = () => {
-        void saveLoredeckWorkbenchEntryFields(pack, selected, form);
+        if (saving || !listeners.active || !workbenchLifetime.isSessionCurrent(owner)) return;
+        saving = true;
+        void saveLoredeckWorkbenchEntryFields(pack, selected, form).catch(error => {
+            if (workbenchLifetime.isSessionCurrent(owner)) reportWorkbenchViewError(error);
+        }).finally(() => { saving = false; });
     };
     form.querySelectorAll('input[name], textarea[name]').forEach(input => {
-        input.addEventListener('input', () => {
+        listeners.listen(input, 'input', () => {
             const current = collectLoredeckWorkbenchEntryFields(form);
             if (!areLoredeckWorkbenchEntryFieldsEqual(current, getLoredeckWorkbenchEntryFields(selected.entry))) {
-                setLoredeckWorkbenchSaveState('dirty', 'This Lorecard has unsaved field changes.', { render: false });
+                setLoredeckWorkbenchSaveState('dirty', 'This Lorecard has unsaved field changes.', { render: false, packId: pack.packId, viewOwner: owner });
             }
         });
-        input.addEventListener('blur', save);
-        input.addEventListener('keydown', event => {
+        listeners.listen(input, 'blur', save);
+        listeners.listen(input, 'keydown', event => {
             if (event.key === 'Enter' && input.tagName !== 'TEXTAREA') {
                 event.preventDefault();
                 input.blur();
@@ -1742,37 +2081,48 @@ function wireLoredeckWorkbenchAutosave(form, pack, selected) {
             }
         });
     });
-    form.querySelectorAll('select[name]').forEach(select => {
-        select.addEventListener('change', save);
-    });
+    form.querySelectorAll('select[name]').forEach(select => listeners.listen(select, 'change', save));
+    return () => listeners.dispose();
 }
 
 function wireLoredeckWorkbenchDraftCreate(form, pack, selected) {
+    const owner = workbenchLifetime.captureSession();
+    const draft = loredeckWorkbenchDraftEntry;
+    const listeners = createWorkbenchFormListeners(form);
+    let saving = false;
+    const rememberBuffer = () => {
+        if (draft) draft.buffer = Object.fromEntries([...form.querySelectorAll('[name]')].map(input => [input.name, input.value]));
+    };
+    const save = async () => {
+        if (saving || !listeners.active || !workbenchLifetime.isSessionCurrent(owner)) return;
+        saving = true;
+        try { await saveLoredeckWorkbenchEntryFields(pack, selected, form, { create: true }); }
+        finally { saving = false; }
+    };
     const actions = createLoredeckActionRow({ className: 'saga-primary-actions saga-loredeck-workbench-editor-actions' });
     actions.appendChild(createButton('Create Lorecard', 'Create this Lorecard directly in the editable Loredeck.', async btn => {
         const restoreBusy = setLoredeckActionButtonBusy(btn, 'Creating...', { fallbackLabel: 'Create Lorecard' });
-        try {
-            await saveLoredeckWorkbenchEntryFields(pack, selected, form, { create: true });
-        } finally {
-            restoreBusy();
-        }
+        try { await save(); } finally { restoreBusy(); }
     }, 'saga-primary-button'));
     actions.appendChild(createButton('Cancel', 'Discard this unsaved Lorecard draft.', () => {
-        cancelLoredeckWorkbenchNewEntry();
+        if (listeners.active && workbenchLifetime.isSessionCurrent(owner)) cancelLoredeckWorkbenchNewEntry();
     }));
     form.appendChild(actions);
-
-    form.querySelectorAll('input[name], textarea[name]').forEach(input => {
-        input.addEventListener('input', () => {
-            setLoredeckWorkbenchSaveState('dirty', 'New Lorecard draft is not created yet.', { render: false });
+    form.querySelectorAll('input[name], textarea[name], select[name]').forEach(input => {
+        listeners.listen(input, input.tagName === 'SELECT' ? 'change' : 'input', () => {
+            rememberBuffer();
+            setLoredeckWorkbenchSaveState('dirty', 'New Lorecard draft is not created yet.', { render: false, packId: pack.packId, viewOwner: owner });
         });
-        input.addEventListener('keydown', event => {
+        listeners.listen(input, 'keydown', event => {
             if (event.key === 'Enter' && event.ctrlKey) {
                 event.preventDefault();
-                void saveLoredeckWorkbenchEntryFields(pack, selected, form, { create: true });
+                void save().catch(error => {
+                    if (workbenchLifetime.isSessionCurrent(owner)) reportWorkbenchViewError(error);
+                });
             }
         });
     });
+    return () => { rememberBuffer(); listeners.dispose(); };
 }
 
 function beginLoredeckWorkbenchNewEntry(pack = {}) {
@@ -1790,7 +2140,7 @@ function beginLoredeckWorkbenchNewEntry(pack = {}) {
     loredeckWorkbenchSelectedEntryId = id;
     setLoredeckWorkbenchSaveState('dirty', 'New Lorecard draft is not created yet.', { render: false, packId: freshPack.packId });
     renderLoredeckWorkbench();
-    requestAnimationFrame(() => {
+    scheduleWorkbenchFrame(() => {
         const titleInput = document.querySelector(`#${LOREDECK_WORKBENCH_ID} [name="title"]`);
         titleInput?.focus?.();
     });
@@ -1893,9 +2243,9 @@ function normalizeLoredeckWorkbenchEntryId(value = '') {
         .replace(/^[._:-]+|[._:-]+$/g, '');
 }
 
-function getLoredeckWorkbenchExistingEntryIds(pack = getWorkbenchPack()) {
+function getLoredeckWorkbenchExistingEntryIds(pack = getWorkbenchPack(), rows = loredeckWorkbenchCache.packId === pack?.packId ? loredeckWorkbenchCache.rows : []) {
     const ids = new Set();
-    for (const row of loredeckWorkbenchCache.rows || []) {
+    for (const row of rows || []) {
         const id = normalizeLoredeckWorkbenchEntryId(row?.id || row?.entry?.id || '');
         if (id) ids.add(id);
     }
@@ -1966,12 +2316,16 @@ function getEntryNotesText(entry = {}) {
 }
 
 async function saveLoredeckWorkbenchEntryFields(pack = {}, selected = {}, form = null, options = {}) {
+    const owner = workbenchLifetime.captureSession();
+    pack = { ...pack };
+    const setSaveState = (status, message, options = {}) => setLoredeckWorkbenchSaveState(status, message, { ...options, packId: pack.packId, viewOwner: owner });
     if (!form || !isLoredeckWorkbenchEditablePack(pack)) return false;
     const fields = collectLoredeckWorkbenchEntryFields(form);
+    const submission = captureWorkbenchEditorSubmission(form);
     const previous = getLoredeckWorkbenchEntryFields(selected.entry);
     const creating = options.create === true || selected.draft === true;
     if (!creating && areLoredeckWorkbenchEntryFieldsEqual(fields, previous)) {
-        if (loredeckWorkbenchSaveState.status === 'dirty') {
+        if (workbenchLifetime.isSessionCurrent(owner) && loredeckWorkbenchSaveState.status === 'dirty') {
             resetLoredeckWorkbenchSaveState(pack.packId);
             refreshLoredeckWorkbenchSaveChip();
         }
@@ -1981,29 +2335,29 @@ async function saveLoredeckWorkbenchEntryFields(pack = {}, selected = {}, form =
         ? normalizeLoredeckWorkbenchEntryId(fields.machineId || selected.id || selected.entry?.id || '')
         : String(selected.id || selected.entry?.id || '').trim();
     if (!id) {
-        setLoredeckWorkbenchSaveState('failed', 'Lorecard save failed because the selected entry has no machine ID.');
+        setSaveState('failed', 'Lorecard save failed because the selected entry has no machine ID.');
         toast('Lorecard save failed: missing machine ID.', 'error');
         return false;
     }
     if (creating && getLoredeckWorkbenchExistingEntryIds(pack).has(id)) {
-        setLoredeckWorkbenchSaveState('failed', `Lorecard ID already exists: ${id}`);
+        setSaveState('failed', `Lorecard ID already exists: ${id}`);
         toast(`Lorecard ID already exists: ${id}`, 'warning');
         return false;
     }
     if (!fields.title) {
-        setLoredeckWorkbenchSaveState('failed', 'Lorecard title is required.');
+        setSaveState('failed', 'Lorecard title is required.');
         toast('Lorecard title is required.', 'warning');
         return false;
     }
     if (creating && !fields.fact) {
-        setLoredeckWorkbenchSaveState('failed', 'New Lorecards need Lore Text before they can be created.');
+        setSaveState('failed', 'New Lorecards need Lore Text before they can be created.');
         toast('New Lorecards need Lore Text before they can be created.', 'warning');
         return false;
     }
 
     const freshPack = getWorkbenchPack(pack.packId) || pack;
     const entry = buildLoredeckWorkbenchEntryOverride(freshPack, { ...selected, id }, fields);
-    setLoredeckWorkbenchSaveState('saving', `${creating ? 'Creating' : 'Saving'} ${fields.title || id}...`);
+    setSaveState('saving', `${creating ? 'Creating' : 'Saving'} ${fields.title || id}...`);
     const saved = persistLoredeckLibraryRecordMutation(freshPack, next => {
         next.entryOverrides = {
             ...(next.entryOverrides || {}),
@@ -2017,15 +2371,18 @@ async function saveLoredeckWorkbenchEntryFields(pack = {}, selected = {}, form =
         errorMessage: 'Loredeck Lorecard save failed.',
     });
     if (!saved) {
-        setLoredeckWorkbenchSaveState('failed', `Could not save ${fields.title || id}.`);
+        setSaveState('failed', `Could not save ${fields.title || id}.`);
         return false;
     }
-    if (creating) {
+    refreshWorkbenchPackAfterMutation(owner, pack.packId);
+    const buffer = workbenchFormBuffers.get(form);
+    if (buffer && workbenchLifetime.isSessionCurrent(owner)) buffer.acknowledged = submission;
+    if (creating && workbenchLifetime.isSessionCurrent(owner)) {
         loredeckWorkbenchDraftEntry = null;
         loredeckWorkbenchSelectedEntryId = id;
     }
-    setLoredeckWorkbenchSaveState('saved', `${creating ? 'Created' : 'Saved'} ${fields.title || id}.`, { render: false, packId: freshPack.packId });
-    await loadLoredeckWorkbenchRows(freshPack.packId, { force: true });
+    setSaveState('saved', `${creating ? 'Created' : 'Saved'} ${fields.title || id}.`, { render: false, packId: freshPack.packId });
+    await loadLoredeckWorkbenchRows(freshPack.packId, { force: true, viewOwner: owner });
     return true;
 }
 
@@ -2086,45 +2443,35 @@ function buildLoredeckWorkbenchEntryOverride(pack = {}, selected = {}, fields = 
 async function loadLoredeckWorkbenchRows(packId = loredeckWorkbenchPackId, options = {}) {
     const id = String(packId || '').trim();
     if (!id) return [];
-    if (!options.force && loredeckWorkbenchCache.packId === id && loredeckWorkbenchCache.rows.length) return loredeckWorkbenchCache.rows;
+    if (!options.force && loredeckWorkbenchCache.packId === id && loredeckWorkbenchCache.status === 'loaded' && loredeckWorkbenchCache.rows.length) return loredeckWorkbenchCache.rows;
+    const token = workbenchLifetime.beginSource(id, options.viewOwner);
     const button = options.button || null;
     const restoreBusy = setLoredeckActionButtonBusy(button, 'Loading...', { fallbackLabel: 'Reload Lorecards' });
-    loredeckWorkbenchCache = { packId: id, status: 'loading', error: '', loadedAt: 0, rows: [], source: null };
-    renderLoredeckWorkbench();
+    if (workbenchLifetime.isSourceCurrent(token)) {
+        hideFloatingTooltip();
+        const previous = loredeckWorkbenchCache.packId === id ? loredeckWorkbenchCache : null;
+        loredeckWorkbenchCache = { packId: id, status: 'loading', error: '', loadedAt: 0, rows: previous?.rows || [], source: previous?.source || null };
+        renderLoredeckWorkbench();
+    }
     try {
         const pack = getWorkbenchPack(id);
         const registry = getLoredeckLibraryRegistry(getState());
-        const sourcePack = pack && pack.type !== 'bundled'
-            ? { ...pack, disabledEntryIds: [] }
-            : pack;
-        const source = await loadLoredeckSourceById(id, {
-            registry,
-            registryRecord: sourcePack,
-        });
+        const sourcePack = pack && pack.type !== 'bundled' ? { ...pack, disabledEntryIds: [] } : pack;
+        const source = await loadLoredeckSourceById(id, { registry, registryRecord: sourcePack });
         const rows = buildLoredeckWorkbenchRows(source, pack);
-        loredeckWorkbenchCache = {
-            packId: id,
-            status: 'loaded',
-            error: '',
-            loadedAt: Date.now(),
-            rows,
-            source,
-        };
-        ensureLoredeckWorkbenchSelection(rows);
-        renderLoredeckWorkbench();
-        if (!rows.length) toast(`${pack?.title || id} has no loadable Lorecards.`, 'warning');
+        if (workbenchLifetime.isSourceCurrent(token)) {
+            loredeckWorkbenchPack = getWorkbenchPack(id) || pack;
+            loredeckWorkbenchCache = { packId: id, status: 'loaded', error: '', loadedAt: Date.now(), rows, source };
+            renderLoredeckWorkbench();
+            if (!rows.length) toast(`${pack?.title || id} has no loadable Lorecards.`, 'warning');
+        }
         return rows;
-    } catch (e) {
-        loredeckWorkbenchCache = {
-            packId: id,
-            status: 'error',
-            error: e?.message || 'Loredeck failed to load.',
-            loadedAt: Date.now(),
-            rows: [],
-            source: null,
-        };
-        renderLoredeckWorkbench();
-        toast(loredeckWorkbenchCache.error, 'error');
+    } catch (error) {
+        if (workbenchLifetime.isSourceCurrent(token)) {
+            loredeckWorkbenchCache = { ...loredeckWorkbenchCache, status: 'error', error: error?.message || 'Loredeck failed to load.', loadedAt: Date.now() };
+            renderLoredeckWorkbench();
+            toast(loredeckWorkbenchCache.error, 'error');
+        }
         return [];
     } finally {
         restoreBusy();
@@ -2157,8 +2504,9 @@ function buildLoredeckWorkbenchRows(source = {}, pack = getWorkbenchPack()) {
 
 function getLoredeckWorkbenchDraftRow() {
     if (!loredeckWorkbenchDraftEntry || loredeckWorkbenchDraftEntry.packId !== loredeckWorkbenchPackId) return null;
-    const id = normalizeLoredeckWorkbenchEntryId(loredeckWorkbenchDraftEntry.id || suggestLoredeckWorkbenchEntryId(getWorkbenchPack()));
-    return {
+    const id = normalizeLoredeckWorkbenchEntryId(loredeckWorkbenchDraftEntry.id || suggestLoredeckWorkbenchEntryId(loredeckWorkbenchPack));
+    if (loredeckWorkbenchDraftEntry.row) return loredeckWorkbenchDraftEntry.row;
+    return loredeckWorkbenchDraftEntry.row = {
         id,
         draft: true,
         sourceFile: 'new',
@@ -2243,9 +2591,9 @@ function getRelevanceFilterOptions() {
     ];
 }
 
-function getCategoryFilterOptions() {
+function getCategoryFilterOptions(rows = getWorkbenchPresentationRows()) {
     const categories = new Set();
-    for (const row of loredeckWorkbenchCache.rows || []) {
+    for (const row of rows || []) {
         const category = getEntryCategory(row.entry).toLowerCase();
         if (category) categories.add(category);
     }

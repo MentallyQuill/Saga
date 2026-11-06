@@ -13,14 +13,19 @@
         <div class="saga-lore-empty">Loading Lorecards...</div>
     {:else if bridge.snapshot.error}
         <div class="saga-lore-empty">{bridge.snapshot.error}</div>
-    {:else}
+    {/if}
+    {#if bridge.snapshot.retainLoadedView || (bridge.snapshot.cacheStatus !== 'loading' && !bridge.snapshot.error)}
         {#if bridge.snapshot.editable}
             <div
                 class="saga-loredeck-workbench-bulk-toolbar"
+                hidden={bridge.snapshot.cacheStatus === 'loading' || !!bridge.snapshot.error}
+                style:display={bridge.snapshot.cacheStatus === 'loading' || bridge.snapshot.error ? 'none' : undefined}
                 use:imperativeLeaf={{ key: bridge.snapshot.packId, model: bridge.snapshot, mount: actions.mountBulkToolbar }}
             ></div>
         {/if}
-        <div class="saga-lore-workbench-main saga-loredeck-workbench-main">
+        <div class="saga-lore-workbench-main saga-loredeck-workbench-main"
+            hidden={bridge.snapshot.cacheStatus === 'loading' || !!bridge.snapshot.error}
+            style:display={bridge.snapshot.cacheStatus === 'loading' || bridge.snapshot.error ? 'none' : undefined}>
             <div
                 class="saga-lore-workbench-table saga-loredeck-workbench-table"
                 class:saga-loredeck-workbench-selectable-table={bridge.snapshot.editable}
