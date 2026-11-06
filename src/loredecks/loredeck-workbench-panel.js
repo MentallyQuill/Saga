@@ -509,8 +509,8 @@ function createLoredeckWorkbenchHeader(pack = null) {
 
     const actions = createLoredeckActionRow({ className: 'saga-primary-actions saga-loredeck-workbench-header-actions' });
     if (pack?.packId) {
-        const refresh = createButton('Reload Lorecards', 'Reload Lorecards from this Loredeck source.', async btn => {
-            await loadLoredeckWorkbenchRows(pack.packId, { force: true, button: btn });
+        const refresh = createButton('Reload Lorecards', 'Reload Lorecards from this Loredeck source.', async () => {
+            await loadLoredeckWorkbenchRows(pack.packId, { force: true });
         });
         actions.appendChild(refresh);
         actions.appendChild(createButton('Open Pack Health', 'Open the Pack Health Center for this Loredeck.', () => {
