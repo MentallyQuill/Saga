@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { paintedGeometry, compareVisualPixels, verifyImagePairs } from './saga-cover-visual-evidence.mjs';
+import { rasterDifference } from './saga-workbench-raster-discriminator.mjs';
 
 test('every non-image pixel is exact even when known cover content changes', () => {
     const before = Buffer.from([0, 0, 0, 255, 0, 0, 0, 255]);
@@ -34,4 +35,13 @@ test('an unknown image transformation or a visible undecoded image fails before 
     await assert.rejects(verifyImagePairs([a], [b], { dpr: 1 }), /Unknown image transformation/);
     b.image.naturalWidth = 0;
     await assert.rejects(verifyImagePairs([a], [b], { dpr: 1 }), /must decode/);
+});
+
+test('raster discriminator reports every one-LSB difference without an automatic noise exemption', () => {
+    const before = Buffer.from([10, 20, 30, 255, 40, 50, 60, 255]);
+    const after = Buffer.from([10, 20, 30, 255, 40, 51, 60, 255]);
+    const result = rasterDifference(before, after, { width: 2, height: 1 });
+    assert.equal(result.changedPixels, 1); assert.equal(result.maxChannelDelta, 1);
+    assert.deepEqual(result.deltaCounts, { 1: 1 }); assert.deepEqual(result.changedBoundsInclusive, [1, 0, 1, 0]);
+    assert.deepEqual([...result.diff], [0, 0, 0, 255, 0, 1, 0, 255]);
 });

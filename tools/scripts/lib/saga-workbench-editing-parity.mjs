@@ -8,8 +8,8 @@ const ready = page => page.waitForSelector('.saga-lore-workbench-main', { state:
 const confirm = page => page.locator('.saga-confirm-actions button').filter({ hasText: /^Confirm$/ }).click();
 
 export function registerWorkbenchEditingParity({ setup, gateSource, clickText }) {
-    for (const type of ['custom', 'generated']) test(`${type}: every editable field obeys input/blur/Enter/Ctrl+Enter/select timing and persistence`, async () => {
-        const h = await setup({ type });
+    for (const type of ['custom', 'generated']) test(`${type}: every editable field obeys input/blur/Enter/Ctrl+Enter/select timing and persistence`, async t => {
+        const h = await setup(t, { type });
         try {
             const edits = [
                 ['title', '  Edited title  ', 'enter'], ['category', 'person', 'blur'],
@@ -45,11 +45,14 @@ export function registerWorkbenchEditingParity({ setup, gateSource, clickText })
             assert.deepEqual(result.content, { fact: 'Edited fact\nSecond line', injection: 'Edited injection', notes: 'Edited notes' });
             assert.equal(result.health, 'stale'); assert.equal(result.kind, 'addition'); assert.deepEqual(result.disabled, []);
             assert.deepEqual(h.errors, []);
+        } catch (error) {
+            if (h.captureFailure) await h.captureFailure(error);
+            throw error;
         } finally { await h.stop(); }
     });
 
-    test('bundled source remains read-only through selection, refresh and modifier events', async () => {
-        const h = await setup({ type: 'bundled' });
+    test('bundled source remains read-only through selection, refresh and modifier events', async t => {
+        const h = await setup(t, { type: 'bundled' });
         try {
             assert.equal(await h.page.locator(`${form} input, ${form} textarea, ${form} select`).count(), 0);
             assert.equal(await h.page.locator(`${rows} [role="checkbox"]`).count(), 0);
@@ -58,19 +61,26 @@ export function registerWorkbenchEditingParity({ setup, gateSource, clickText })
             await h.page.evaluate(() => panel.refreshLoredeckWorkbench());
             assert.equal(await h.page.evaluate(() => fixture.persistenceCalls.length), 0);
             assert.deepEqual(h.errors, []);
+        } catch (error) {
+            if (h.captureFailure) await h.captureFailure(error);
+            throw error;
         } finally { await h.stop(); }
     });
 
-    test('600 entries plus a draft retain full logical selection, collision exclusion, modifier ranges and unchanged row nodes', async () => {
-        const h = await setup({ entryCount: 600 });
+    test('600 entries plus a draft retain full logical selection, collision exclusion, modifier ranges and unchanged row nodes', async t => {
+        const h = await setup(t, { entryCount: 600 });
         try {
-            await h.page.evaluate(() => { window.firstRow = document.querySelector('.saga-loredeck-workbench-entry-row'); });
+            await h.page.evaluate(() => {
+                window.firstRow = document.querySelector('.saga-loredeck-workbench-entry-row');
+                window.unaffectedRow = document.querySelectorAll('.saga-loredeck-workbench-entry-row')[20];
+            });
             await h.page.locator(rows).nth(0).click({ modifiers: ['Control'] });
             await h.page.locator(rows).nth(2).click({ modifiers: ['Meta'] });
             assert.equal(await h.page.locator(summary).textContent(), '2 selected');
             await h.page.locator(rows).nth(4).click({ modifiers: ['Shift'] });
             assert.equal(await h.page.locator(summary).textContent(), '4 selected');
             assert.equal(await h.page.evaluate(() => document.querySelector('.saga-loredeck-workbench-entry-row') === firstRow), true);
+            assert.equal(await h.page.evaluate(() => document.querySelectorAll('.saga-loredeck-workbench-entry-row')[20] === unaffectedRow), true);
             await clickText(h.page, 'New Lorecard');
             const draftId = await h.page.locator('[name="machineId"]').inputValue();
             await h.page.locator('[name="title"]').fill('Uncreated draft');
@@ -86,13 +96,18 @@ export function registerWorkbenchEditingParity({ setup, gateSource, clickText })
             assert.match(await h.page.locator('.saga-lore-workbench-table').textContent(), /Showing 500 of/);
             await h.page.locator('.saga-lore-workbench-row-header [role="checkbox"]').click();
             assert.equal(await h.page.locator(summary).textContent(), '600 selected', 'Header selects all 600 source IDs including the colliding source ID; the separate draft never adds a logical ID');
+            await h.page.locator('.saga-lore-workbench-row-header [role="checkbox"]').click();
+            assert.equal(await h.page.locator(summary).textContent(), 'No bulk selection');
+            await h.page.locator('.saga-lore-workbench-row-header [role="checkbox"]').click();
+            await h.page.locator('.saga-loredeck-workbench-bulk-toolbar select').first().selectOption('high');
             await clickText(h.page, 'Set Relevance'); await confirm(h.page); await ready(h.page);
             const payload = await h.page.evaluate(id => {
                 const call = fixture.persistenceCalls.at(-1);
                 return { writes: fixture.persistenceCalls.length, changed: Object.values(call.after.entryOverrides).filter(entry => entry.extensions?.sagaLoredeckOverride).length,
-                    collision: Boolean(call.after.entryOverrides[id].extensions?.sagaLoredeckOverride) };
+                    collision: Boolean(call.after.entryOverrides[id].extensions?.sagaLoredeckOverride),
+                    allHigh: Object.values(call.after.entryOverrides).every(entry => entry.relevance === 'high') };
             }, draftId);
-            assert.deepEqual(payload, { writes: 1, changed: 600, collision: true });
+            assert.deepEqual(payload, { writes: 1, changed: 600, collision: true, allHigh: true });
             await clickText(h.page, 'Select Visible');
             // Select Visible anchors the final logical row, beyond the display
             // cap. Shift-click must still range across the full source domain.
@@ -107,11 +122,14 @@ export function registerWorkbenchEditingParity({ setup, gateSource, clickText })
             await h.page.evaluate(() => fixture.openWorkbench('performance-custom-b')); await ready(h.page);
             assert.equal(await h.page.locator(summary).textContent(), 'No bulk selection');
             assert.deepEqual(h.errors, []);
+        } catch (error) {
+            if (h.captureFailure) await h.captureFailure(error);
+            throw error;
         } finally { await h.stop(); }
     });
 
-    test('draft validation and cancel never persist; disabled entries are restored by an actual field save', async () => {
-        const h = await setup();
+    test('draft validation and cancel never persist; disabled entries are restored by an actual field save', async t => {
+        const h = await setup(t);
         try {
             await clickText(h.page, 'New Lorecard');
             await h.page.locator('[name="title"]').fill(''); await clickText(h.page, 'Create Lorecard');
@@ -136,12 +154,15 @@ export function registerWorkbenchEditingParity({ setup, gateSource, clickText })
             await h.page.locator('[name="notes"]').fill('Restore by saving'); await h.page.locator('[name="notes"]').blur(); await ready(h.page);
             const result = await h.page.evaluate(() => ({ writes: fixture.persistenceCalls.length, disabled: fixture.persistenceCalls[0].after.disabledEntryIds, health: fixture.persistenceCalls[0].after.healthStatus }));
             assert.deepEqual(result, { writes: 1, disabled: [], health: 'stale' }); assert.deepEqual(h.errors, []);
+        } catch (error) {
+            if (h.captureFailure) await h.captureFailure(error);
+            throw error;
         } finally { await h.stop(); }
     });
 
     for (const action of ['Set Relevance', 'Delete Selected', 'Duplicate Selected']) for (const target of ['performance-custom-a', 'performance-custom-b']) {
-        test(`${action} confirmation preserves dirty selected ${target} after an A session change`, async () => {
-            const h = await setup();
+        test(`${action} confirmation preserves dirty selected ${target} after an A session change`, async t => {
+            const h = await setup(t);
             try {
                 await h.page.locator(`${rows} [role="checkbox"]`).first().click(); await clickText(h.page, action);
                 await h.page.waitForSelector('.saga-confirm-overlay');
@@ -162,12 +183,15 @@ export function registerWorkbenchEditingParity({ setup, gateSource, clickText })
                     status: document.querySelector('[data-loredeck-workbench-save-chip]').textContent }));
                 assert.deepEqual(result, { count: 1, pack: 'performance-custom-a', selected: '1 selected', input: true, buffer: 'Dirty new owner', id: 'fixture.entry.0002', status: 'Unsaved changes' });
                 assert.deepEqual(h.errors, []);
+            } catch (error) {
+                if (h.captureFailure) await h.captureFailure(error);
+                throw error;
             } finally { await h.stop(); }
         });
     }
 
-    test('retained bulk busy controls settle after an operation source reload is superseded', async () => {
-        const h = await setup();
+    test('retained bulk busy controls settle after an operation source reload is superseded', async t => {
+        const h = await setup(t);
         try {
             const source = await gateSource(h, 'performance-custom-a');
             await h.page.locator(`${rows} [role="checkbox"]`).first().click();
@@ -186,11 +210,14 @@ export function registerWorkbenchEditingParity({ setup, gateSource, clickText })
                     writes: fixture.persistenceCalls.length };
             });
             assert.deepEqual(result, { applying: false, setDisabled: false, writes: 1 }); assert.deepEqual(h.errors, []);
+        } catch (error) {
+            if (h.captureFailure) await h.captureFailure(error);
+            throw error;
         } finally { await h.stop(); }
     });
 
-    test('table and editor scroll independently while composing text survives a header selection update', async () => {
-        const h = await setup({ entryCount: 600 });
+    test('table and editor scroll independently while composing text survives a header selection update', async t => {
+        const h = await setup(t, { entryCount: 600 });
         try {
             const result = await h.page.evaluate(() => {
                 const table = document.querySelector('.saga-lore-workbench-table');
@@ -210,11 +237,14 @@ export function registerWorkbenchEditingParity({ setup, gateSource, clickText })
             assert.ok(result.before[0] > 0); assert.ok(result.before[2] > 0); assert.deepEqual(result.after, result.before);
             assert.equal(result.identity, true); assert.equal(result.value, true); assert.deepEqual(result.caret, [3, 18]); assert.equal(result.writes, 0);
             assert.deepEqual(h.errors, []);
+        } catch (error) {
+            if (h.captureFailure) await h.captureFailure(error);
+            throw error;
         } finally { await h.stop(); }
     });
 
-    test('a late field-save response cannot acknowledge the dirty editor of a reopened same-pack session', async () => {
-        const h = await setup();
+    test('a late field-save response cannot acknowledge the dirty editor of a reopened same-pack session', async t => {
+        const h = await setup(t);
         try {
             const source = await gateSource(h, 'performance-custom-a');
             await h.page.evaluate(() => {
@@ -236,11 +266,14 @@ export function registerWorkbenchEditingParity({ setup, gateSource, clickText })
                 oldSourcePublished: document.querySelector('.saga-lore-workbench-table').textContent.includes('Old save response'),
             })), { node: true, value: 'New session unsubmitted', writes: 1, persisted: 'Old owner submitted', status: 'Unsaved changes', oldSourcePublished: false });
             assert.deepEqual(h.errors, []);
+        } catch (error) {
+            if (h.captureFailure) await h.captureFailure(error);
+            throw error;
         } finally { await h.stop(); }
     });
 
-    test('real file-backed source edits persist an override and delete/restore changes disabled IDs without deleting the source', async () => {
-        const h = await setup();
+    test('real file-backed source edits persist an override and delete/restore changes disabled IDs without deleting the source', async t => {
+        const h = await setup(t);
         try {
             const source = await gateSource(h, 'performance-custom-a');
             await clickText(h.page, 'Reload Lorecards'); await source.wait(); await source.release(); await ready(h.page);
@@ -257,13 +290,17 @@ export function registerWorkbenchEditingParity({ setup, gateSource, clickText })
             assert.equal(deleted.entryOverrides['source.performance-custom-a'], undefined, 'Deleting a source override restores the underlying source and suppresses its ID');
             await h.page.evaluate(() => {
                 const control = document.querySelectorAll('.saga-lore-workbench-controls .saga-lore-workbench-select')[2];
-                control.querySelector('button').click(); control.querySelector('[role="option"][data-value="all"]').click();
+                control.querySelector('button').click(); control.querySelector('[role="option"][data-value="disabled"]').click();
             });
+            assert.equal(await h.page.locator(rows).count(), 1, 'Disabled-only filter retains the single suppressed source row');
             await h.page.locator(rows).filter({ hasText: 'Loaded source marker' }).locator('[role="checkbox"]').click();
             await clickText(h.page, 'Restore Selected'); await confirm(h.page); await source.wait(); await source.release(); await ready(h.page);
             const restored = await h.page.evaluate(() => ({ count: fixture.persistenceCalls.length, after: fixture.persistenceCalls[2].after }));
             assert.equal(restored.count, 3); assert.deepEqual(restored.after.disabledEntryIds, []); assert.equal(restored.after.healthStatus, 'stale');
             assert.equal(await h.page.locator('.saga-loredeck-workbench-disabled-row').count(), 0); assert.deepEqual(h.errors, []);
+        } catch (error) {
+            if (h.captureFailure) await h.captureFailure(error);
+            throw error;
         } finally { await h.stop(); }
     });
 }

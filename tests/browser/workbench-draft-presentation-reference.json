@@ -1,0 +1,49 @@
+{
+  "status": "observed",
+  "revision": "1a92c7082241af393146215a39ce2073ce646db2",
+  "browser": "156.0.4314.58",
+  "executablePath": "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe",
+  "browserHash": "d35d48b11f0439eeeddbbff0bf54856e922f5e1506a2f3098b5a808fcec4068b",
+  "sourceHash": "f80c3ff483944e85ee67ca3ccd067c6a6f88d2b09d2d011d90f66e54c0c8d05a",
+  "fixtureHash": "acc70381c0758438d0f1f3b59153fc3be876d82b8b764a11e15c78de6e4e6216",
+  "probeHash": "76d6f40f96fc637d3fd012e70e5ceec597ef98f4a427683becd343e0dfa33a30",
+  "outcomes": {
+    "loading": {
+      "value": "all",
+      "label": "All Types",
+      "options": [
+        "all"
+      ],
+      "count": "1 of 0 Lorecards",
+      "headerCount": "0 Lorecards",
+      "tab": "Lorecards",
+      "files": "Files"
+    },
+    "error": {
+      "value": "all",
+      "label": "All Types",
+      "options": [
+        "all"
+      ],
+      "count": "1 of 0 Lorecards",
+      "headerCount": "0 Lorecards",
+      "tab": "Lorecards",
+      "files": "Files"
+    },
+    "loaded": {
+      "value": "character",
+      "label": "Character",
+      "options": [
+        "all",
+        "character",
+        "location"
+      ],
+      "count": "8 of 13 Lorecards",
+      "headerCount": "13 Lorecards",
+      "tab": "Lorecards (13)",
+      "files": "Files (2)"
+    }
+  },
+  "writes": 0,
+  "errors": []
+}

@@ -5,7 +5,7 @@ import { startVisualSmokeServer } from '../serve-visual-smoke.mjs';
 import { assertCachePolicy } from './saga-performance-report.mjs';
 import { createSagaPerformanceRequestJournal } from './saga-performance-request-journal.mjs';
 
-export async function startSagaPerformanceHarness({ sourceRoot, fixtureRoot, browserName = 'chromium', viewport = { width: 1440, height: 900 }, deviceScaleFactor = 1, cpuRate = 1, cacheMode = 'cold' } = {}) {
+export async function startSagaPerformanceHarness({ sourceRoot, fixtureRoot, browserName = 'chromium', viewport = { width: 1440, height: 900 }, deviceScaleFactor = 1, cpuRate = 1, cacheMode = 'cold', chromiumArgs } = {}) {
     assert.ok(['chromium', 'firefox', 'webkit'].includes(browserName), 'Unknown browser');
     assert.ok(cpuRate >= 1 && Number.isFinite(cpuRate), 'Invalid CPU rate');
     if (browserName !== 'chromium' && cpuRate !== 1) throw new Error('CDP CPU throttling is only available in Chromium');
@@ -26,7 +26,7 @@ export async function startSagaPerformanceHarness({ sourceRoot, fixtureRoot, bro
                 try { await access(candidate); executablePath = candidate; break; } catch { /* Try next. */ }
             }
         }
-        browser = await playwright[browserName].launch({ headless: true, executablePath });
+        browser = await playwright[browserName].launch({ headless: true, executablePath, args: browserName === 'chromium' ? chromiumArgs : undefined });
         async function resetPage() {
             if (context) await context.close();
             context = await browser.newContext({ viewport, deviceScaleFactor, isMobile: browserName !== 'firefox' && viewport.width < 600, hasTouch: viewport.width < 600 });

@@ -3,12 +3,12 @@ import { writeFile } from 'node:fs/promises';
 import { chromium } from 'playwright';
 import { startVisualSmokeServer } from '../serve-visual-smoke.mjs';
 import { startNativeFirefox } from './saga-native-webdriver.mjs';
-import { parityProvenance } from './saga-parity-provenance.mjs';
+import { parityProvenance, paritySourceRoot } from './saga-parity-provenance.mjs';
 
-const server = await startVisualSmokeServer({ port: 0 });
+const server = await startVisualSmokeServer({ port: 0, sourceRoot: paritySourceRoot });
 let native, browser;
 const report = { platform: process.platform, provenance: await parityProvenance([
-    'tests/browser/workbench-adapter-contract.mjs', 'tools/scripts/lib/saga-native-webdriver.mjs', 'tools/scripts/lib/saga-workbench-native-parity.mjs',
+    'tests/browser/workbench-adapter-contract.html', 'tests/browser/workbench-adapter-contract.mjs', 'tools/scripts/lib/saga-native-webdriver.mjs', 'tools/scripts/lib/saga-workbench-native-parity.mjs',
     process.env.SAGA_OLD_CHROMIUM_PATH, process.env.SAGA_FIREFOX_BINARY, process.env.SAGA_GECKODRIVER_PATH,
 ]), checks: [] };
 function checkContract(result) {
@@ -25,7 +25,7 @@ try {
         assert.match(browser.version(), /^87\./);
         const page = await browser.newPage(); const errors = [];
         page.on('pageerror', error => errors.push(String(error)));
-        await page.goto(`${server.origin}/tests/browser/workbench-adapter-contract.html`);
+        await page.goto(`${server.origin}/__performance/workbench-adapter-contract.html`);
         const result = await page.evaluate(async () => await window.contractPromise);
         checkContract(result); assert.deepEqual(errors, []);
         report.checks.push({ browser: 'Actual Chromium 87', version: browser.version(), contract: result,
@@ -35,7 +35,7 @@ try {
     if (process.env.SAGA_FIREFOX_BINARY || process.env.SAGA_GECKODRIVER_PATH) {
         native = await startNativeFirefox({ binary: process.env.SAGA_FIREFOX_BINARY, driverPath: process.env.SAGA_GECKODRIVER_PATH,
             expectedVersion: process.env.SAGA_FIREFOX_EXPECTED_VERSION || '^153\\.6\\.0' });
-        await native.goto(`${server.origin}/tests/browser/workbench-adapter-contract.html`);
+        await native.goto(`${server.origin}/__performance/workbench-adapter-contract.html`);
         const contract = await native.evaluate(async () => await window.contractPromise); checkContract(contract);
         report.checks.push({ browser: 'Actual native Firefox', capabilities: native.capabilities, contract });
         if (process.env.SAGA_NATIVE_FULL_PARITY === '1') {
@@ -43,7 +43,7 @@ try {
             const result = await native.evaluate(async () => {
                 const wait = async predicate => { for (let i = 0; i < 300; i++) { if (predicate()) return; await new Promise(resolve => setTimeout(resolve, 20)); } throw new Error('Native parity condition timed out'); };
                 await wait(() => window.__sagaSmokeReady);
-                const { installSagaPerformanceFixture } = await import('/tests/browser/performance-fixtures.mjs');
+                const { installSagaPerformanceFixture } = await import('/__performance/performance-fixtures.mjs');
                 const panel = await import('/src/loredecks/loredeck-workbench-panel.js');
                 const fixture = await installSagaPerformanceFixture({ entryCount: 600 }); fixture.openWorkbench();
                 await wait(() => document.querySelector('.saga-loredeck-workbench-editor-form'));

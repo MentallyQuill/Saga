@@ -5,7 +5,11 @@
   "scripts": {
     "build:ui": "vite build --config vite.saga-ui.config.mjs",
     "build:thumbnails": "node tools/scripts/build-loredeck-thumbnails.mjs",
-    "check:generated": "node tools/scripts/check-saga-ui-generated.mjs"
+    "check:generated": "node tools/scripts/check-saga-ui-generated.mjs",
+    "test:rendering-structure": "node tools/scripts/test-rendering-performance-acceptance-structure.mjs",
+    "test:rendering-acceptance": "node tools/scripts/test-rendering-performance-acceptance.mjs",
+    "test:ui-parity": "node tools/scripts/test-loredeck-workbench-browser-parity.mjs",
+    "evaluate:rendering": "node tools/scripts/evaluate-rendering-performance.mjs"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "7.3.1",

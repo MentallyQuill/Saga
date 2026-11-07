@@ -49,7 +49,7 @@ console.log('Rendering performance server and harness contracts passed.');
 const { summarizeSamples } = await import('./lib/saga-performance-report.mjs');
 assert.equal(summarizeSamples([{ x: 1 }, { x: 5 }], 'x').median, 3, 'Even-run medians average the middle pair');
 
-const interactionOnly = capture(); interactionOnly.samples[0].kind = 'interaction'; assert.throws(() => validateCapture(interactionOnly), /replicate/); interactionOnly.samples[0].readinessMs = null; assert.doesNotThrow(() => validateCapture(interactionOnly));
+const interactionOnly = capture(); interactionOnly.samples[0].kind = 'interaction'; interactionOnly.samples[0].firstUsefulContentMs = null; assert.throws(() => validateCapture(interactionOnly), /replicate/); interactionOnly.samples[0].readinessMs = null; assert.doesNotThrow(() => validateCapture(interactionOnly));
 
 if (process.argv.includes('--browser')) {
   const h = await startSagaPerformanceHarness({ sourceRoot: process.cwd(), fixtureRoot: join(process.cwd(), 'tests/browser'), cacheMode: 'warm' });
@@ -330,7 +330,7 @@ if (covers('cpu-args')) {
 }
 const gatedCapture = () => {
   const value = capture(); value.metadata.imageReadinessPolicy = structuredClone(SAGA_IMAGE_READINESS_POLICY); value.metadata.fixture.library = true;
-  Object.assign(value.samples[0], { kind: 'open', interactionMs: null, imageReadiness: { ready: true, supported: true, policy: SAGA_IMAGE_READINESS_POLICY.id, unknownRoots: 0, unknownImages: 0, eligibleCount: 1, decodedCount: 1, visibleCoverCount: 1, visibleDeckCoverCount: 1, initialReadyEpoch: 1, sealedEpoch: 2, images: [{ id: 1, source: 'https://fixture/cover.png', decoded: true, cover: true, deckCover: true }] } });
+  Object.assign(value.samples[0], { kind: 'open', interactionMs: null, selectionCpuMs: null, imageReadiness: { ready: true, supported: true, policy: SAGA_IMAGE_READINESS_POLICY.id, unknownRoots: 0, unknownImages: 0, eligibleCount: 1, decodedCount: 1, visibleCoverCount: 1, visibleDeckCoverCount: 1, initialReadyEpoch: 1, sealedEpoch: 2, images: [{ id: 1, source: 'https://fixture/cover.png', decoded: true, cover: true, deckCover: true }] } });
   return value;
 };
 assert.doesNotThrow(() => validateCapture(gatedCapture()));

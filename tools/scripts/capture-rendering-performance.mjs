@@ -28,7 +28,7 @@ assert.ok(Number.isInteger(warmRuns) && warmRuns > 0 && Number.isInteger(coldRun
 await fs.mkdir(output, { recursive: true });
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const fixtureHash = hash(await fs.readFile(path.join(fixtureRoot, 'performance-fixtures.mjs')));
-const protocolFiles = ['tools/scripts/capture-rendering-performance.mjs', 'tools/scripts/lib/saga-performance-harness.mjs', 'tools/scripts/lib/saga-performance-report.mjs', 'tools/scripts/lib/saga-performance-request-journal.mjs', 'tools/scripts/serve-visual-smoke.mjs', 'tools/scripts/lib/saga-performance-image-readiness.mjs'];
+const protocolFiles = ['tools/scripts/capture-rendering-performance.mjs', 'tools/scripts/lib/saga-performance-harness.mjs', 'tools/scripts/lib/saga-performance-report.mjs', 'tools/scripts/lib/saga-performance-request-journal.mjs', 'tools/scripts/serve-visual-smoke.mjs', 'tools/scripts/lib/saga-performance-image-readiness.mjs', 'tools/scripts/lib/saga-rendering-acceptance.mjs', 'tools/scripts/lib/saga-rendering-statistics.mjs', 'tools/scripts/lib/saga-rendering-evidence.mjs'];
 const protocolHash = hash(Buffer.concat(await Promise.all(protocolFiles.map(async file => Buffer.concat([Buffer.from(file), await fs.readFile(path.join(root, file))])))));
 const sourceFiles = (await Promise.all(['src', 'styles'].map(async dir => (await fs.readdir(path.join(sourceRoot, dir), { recursive: true, withFileTypes: true })).filter(e => e.isFile()).map(e => path.relative(sourceRoot, path.join(e.parentPath, e.name)).replaceAll('\\', '/'))))).flat().sort();
 sourceFiles.push('manifest.json');

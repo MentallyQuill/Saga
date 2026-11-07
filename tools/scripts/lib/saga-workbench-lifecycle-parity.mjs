@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { writeFile } from 'node:fs/promises';
 import { startSagaPerformanceHarness } from './saga-performance-harness.mjs';
-import { parityProvenance } from './saga-parity-provenance.mjs';
+import { parityProvenance, paritySourceRoot } from './saga-parity-provenance.mjs';
 
-const h = await startSagaPerformanceHarness();
+const h = await startSagaPerformanceHarness({ sourceRoot: paritySourceRoot });
 try {
     await h.page.evaluate(async () => {
         const { installSagaPerformanceFixture } = await import('/__performance/performance-fixtures.mjs');

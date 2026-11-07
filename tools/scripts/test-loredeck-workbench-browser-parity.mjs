@@ -1,36 +1,55 @@
 import assert from 'node:assert/strict';
 import { test, after } from 'node:test';
-import { writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { startSagaPerformanceHarness } from './lib/saga-performance-harness.mjs';
 import { registerWorkbenchEditingParity } from './lib/saga-workbench-editing-parity.mjs';
-import { parityProvenance } from './lib/saga-parity-provenance.mjs';
+import { registerWorkbenchBulkTransitionParity } from './lib/saga-workbench-bulk-transition-parity.mjs';
+import { readUnavailablePresentation } from './lib/saga-workbench-unavailable-probe.mjs';
+import { allocateParityHarness } from './lib/saga-parity-failure-artifacts.mjs';
+import { parityProvenance, paritySourceRoot, sha256 } from './lib/saga-parity-provenance.mjs';
 
-const provenance = await parityProvenance(['tools/scripts/test-loredeck-workbench-browser-parity.mjs', 'tools/scripts/lib/saga-workbench-editing-parity.mjs']);
+const draftReferencePath = process.env.SAGA_PARITY_DRAFT_REFERENCE || 'tests/browser/workbench-draft-presentation-reference.json';
+const provenance = await parityProvenance(['tools/scripts/test-loredeck-workbench-browser-parity.mjs', 'tools/scripts/lib/saga-workbench-editing-parity.mjs',
+    'tools/scripts/lib/saga-workbench-bulk-transition-parity.mjs', 'tools/scripts/lib/saga-workbench-unavailable-probe.mjs',
+    'tools/scripts/lib/saga-parity-failure-artifacts.mjs', 'tools/scripts/lib/saga-parity-provenance.mjs', draftReferencePath]);
+async function matchesObservedText(file, observedHash) {
+    if (provenance.files[file] === observedHash) return true;
+    // The observation records exact Windows bytes. Check the equivalent LF and
+    // CRLF text encodings so the same reference can run from a Linux checkout.
+    const lf = (await readFile(file, 'utf8')).replaceAll('\r\n', '\n');
+    return sha256(lf) === observedHash || sha256(lf.replaceAll('\n', '\r\n')) === observedHash;
+}
 const browsers = new Map();
-const startHarness = async options => {
-    const harness = await startSagaPerformanceHarness({ browserName: process.env.SAGA_PARITY_BROWSER || 'chromium', ...options });
+const startHarness = async ({ name }) => {
+    const browserName = process.env.SAGA_PARITY_BROWSER || 'chromium';
+    const harness = await allocateParityHarness({ directory: process.env.SAGA_PARITY_ARTIFACT_DIR, caseName: name, browserName, provenance,
+        allocate: () => startSagaPerformanceHarness({ browserName, sourceRoot: paritySourceRoot }) });
     browsers.set(harness.executablePath, { name: harness.browserName, version: harness.browserVersion, executablePath: harness.executablePath });
     return harness;
 };
 after(async () => {
     if (process.env.SAGA_PARITY_REPORT) await writeFile(process.env.SAGA_PARITY_REPORT, JSON.stringify({ provenance, browsers: [...browsers.values()] }, null, 2));
 });
-const setup = async (options = {}) => {
-    const harness = await startHarness();
+const setup = async (t, options = {}) => {
+    const harness = await startHarness(t);
     try {
         await harness.page.evaluate(async options => {
-            const { installSagaPerformanceFixture } = await import('/tests/browser/performance-fixtures.mjs');
+            const { installSagaPerformanceFixture } = await import('/__performance/performance-fixtures.mjs');
             window.fixture = await installSagaPerformanceFixture({ entryCount: 12, ...options });
             window.panel = await import('/src/loredecks/loredeck-workbench-panel.js');
             fixture.openWorkbench();
         }, options);
         await harness.page.waitForSelector(options.type === 'bundled' ? '.saga-lore-workbench-detail' : '.saga-loredeck-workbench-editor-form');
         return harness;
-    } catch (error) { await harness.stop(); throw error; }
+    } catch (error) {
+        if (harness.captureFailure) await harness.captureFailure(error);
+        await harness.stop();
+        throw error;
+    }
 };
 
-test('controller retains shell, table, search, editor buffers and caret through refresh and real save reload', async () => {
-    const h = await setup();
+test('controller retains shell, table, search, editor buffers and caret through refresh and real save reload', async t => {
+    const h = await setup(t);
     try {
         const result = await h.page.evaluate(async () => {
             const one = selector => document.querySelector(selector);
@@ -66,11 +85,14 @@ test('controller retains shell, table, search, editor buffers and caret through 
         });
         assert.deepEqual(result, Object.fromEntries(Object.keys(result).map(key => [key, true])));
         assert.deepEqual(h.errors, []);
+    } catch (error) {
+        if (h.captureFailure) await h.captureFailure(error);
+        throw error;
     } finally { await h.stop(); }
 });
 
-for (const target of ['performance-custom-b', 'performance-custom-a']) test(`confirmation captures original rows and session before reopening ${target}`, async () => {
-    const h = await setup();
+for (const target of ['performance-custom-b', 'performance-custom-a']) test(`confirmation captures original rows and session before reopening ${target}`, async t => {
+    const h = await setup(t);
     try {
         await h.page.locator('.saga-loredeck-workbench-entry-row [role=checkbox]').first().click();
         await h.page.locator('button').filter({ hasText: /^Duplicate Selected$/ }).click();
@@ -100,13 +122,16 @@ for (const target of ['performance-custom-b', 'performance-custom-a']) test(`con
         assert.equal(result.copiedTitle, 'Copy of Deck Lorecard 0001');
         assert.ok(result.header.includes(target)); assert.equal(result.save, 'Editable'); assert.equal(result.selected, 'No bulk selection');
         assert.deepEqual(h.errors, []);
+    } catch (error) {
+        if (h.captureFailure) await h.captureFailure(error);
+        throw error;
     } finally { await h.stop(); }
 });
 
 const clickText = (page, text) => page.locator('#saga-loredeck-workbench button').filter({ hasText: new RegExp(`^${text}$`) }).click();
 
-test('real duplicate and draft-create reloads retain their intended new selected entry', async () => {
-    const h = await setup();
+test('real duplicate and draft-create reloads retain their intended new selected entry', async t => {
+    const h = await setup(t);
     try {
         await h.page.locator('.saga-loredeck-workbench-entry-row [role=checkbox]').first().click();
         await clickText(h.page, 'Duplicate Selected');
@@ -125,6 +150,9 @@ test('real duplicate and draft-create reloads retain their intended new selected
         assert.equal(calls.length, 2);
         assert.equal(calls[1].entryOverrides[id].content.fact, 'Created draft lore text');
         assert.deepEqual(h.errors, []);
+    } catch (error) {
+        if (h.captureFailure) await h.captureFailure(error);
+        throw error;
     } finally { await h.stop(); }
 });
 
@@ -151,8 +179,8 @@ async function gateSource(h, packId) {
     };
 }
 
-for (const submit of ['select', 'blur']) test(`a new ${submit} save persists immediately after a newer reload overtakes an earlier save reload`, async () => {
-    const h = await setup();
+for (const submit of ['select', 'blur']) test(`a new ${submit} save persists immediately after a newer reload overtakes an earlier save reload`, async t => {
+    const h = await setup(t);
     try {
         const source = await gateSource(h, 'performance-custom-a');
         await h.page.evaluate(() => {
@@ -197,11 +225,14 @@ for (const submit of ['select', 'blur']) test(`a new ${submit} save persists imm
         const expected = submit === 'select' ? 'high' : 'Second submitted notes';
         assert.deepEqual(result, { writes: 2, sameInput: true, value: expected, persisted: expected, save: 'Saved' });
         assert.deepEqual(h.errors, []);
+    } catch (error) {
+        if (h.captureFailure) await h.captureFailure(error);
+        throw error;
     } finally { await h.stop(); }
 });
 
-test('a failed field persistence does not suppress retrying the same submitted values', async () => {
-    const h = await setup();
+test('a failed field persistence does not suppress retrying the same submitted values', async t => {
+    const h = await setup(t);
     try {
         const immediate = await h.page.evaluate(() => {
             window.persistenceAttempts = 0;
@@ -229,11 +260,14 @@ test('a failed field persistence does not suppress retrying the same submitted v
         });
         assert.deepEqual(result, { attempts: 2, writes: 1, persisted: 'Retry submitted title' });
         assert.deepEqual(h.errors, []);
+    } catch (error) {
+        if (h.captureFailure) await h.captureFailure(error);
+        throw error;
     } finally { await h.stop(); }
 });
 
-test('old confirmed save reloads A while B is loading without superseding B source ownership', async () => {
-    const h = await setup();
+test('old confirmed save reloads A while B is loading without superseding B source ownership', async t => {
+    const h = await setup(t);
     try {
         const a = await gateSource(h, 'performance-custom-a');
         const b = await gateSource(h, 'performance-custom-b');
@@ -255,11 +289,14 @@ test('old confirmed save reloads A while B is loading without superseding B sour
         assert.equal(await h.page.locator('[data-loredeck-workbench-save-chip]').textContent(), 'Editable');
         assert.equal(await h.page.evaluate(() => fixture.persistenceCalls.length), 1);
         assert.deepEqual(h.errors, []);
+    } catch (error) {
+        if (h.captureFailure) await h.captureFailure(error);
+        throw error;
     } finally { await h.stop(); }
 });
 
-test('same-pack reopen starts a fresh source request and late loads cannot recreate a closed overlay', async () => {
-    const h = await setup();
+test('same-pack reopen starts a fresh source request and late loads cannot recreate a closed overlay', async t => {
+    const h = await setup(t);
     try {
         const source = await gateSource(h, 'performance-custom-a');
         await clickText(h.page, 'Reload Lorecards');
@@ -279,11 +316,14 @@ test('same-pack reopen starts a fresh source request and late loads cannot recre
         await h.page.waitForTimeout(40);
         assert.equal(await h.page.locator('#saga-loredeck-workbench').count(), 0);
         assert.deepEqual(h.errors, []);
+    } catch (error) {
+        if (h.captureFailure) await h.captureFailure(error);
+        throw error;
     } finally { await h.stop(); }
 });
 
-test('real forced reload shows original loading copy, retains hidden editor buffers and hides its active tooltip', async () => {
-    const h = await setup();
+test('real forced reload shows original loading copy, retains hidden editor buffers and hides its active tooltip', async t => {
+    const h = await setup(t);
     try {
         const source = await gateSource(h, 'performance-custom-a');
         const before = await h.page.evaluate(() => {
@@ -323,11 +363,14 @@ test('real forced reload shows original loading copy, retains hidden editor buff
         }));
         assert.deepEqual(retained, { area: true, table: true, buffer: true, scroll: before.scroll, writes: 0 });
         assert.deepEqual(h.errors, []);
+    } catch (error) {
+        if (h.captureFailure) await h.captureFailure(error);
+        throw error;
     } finally { await h.stop(); }
 });
 
-test('selected-category loading and error controls keep the original unavailable-source presentation', async () => {
-    const h = await setup();
+test('selected-category loading and error controls keep the original unavailable-source presentation', async t => {
+    const h = await setup(t);
     try {
         const source = await gateSource(h, 'performance-custom-a');
         await h.page.evaluate(() => {
@@ -368,12 +411,33 @@ test('selected-category loading and error controls keep the original unavailable
         const loaded = await presentation();
         assert.equal(loaded.node, true); assert.equal(loaded.value, 'character'); assert.equal(loaded.label, 'Character');
         assert.deepEqual(loaded.options, ['all', 'character', 'location']); assert.equal(loaded.count, '7 of 13 Lorecards');
+        // Counts/options with a draft must come from an actual original-source
+        // observation. No guessed expected values or optional silent skip.
+        const reference = JSON.parse(await readFile(draftReferencePath, 'utf8'));
+        assert.equal(reference.status, 'observed'); assert.match(reference.revision, /^1a92c708/);
+        assert.ok(await matchesObservedText('tests/browser/performance-fixtures.mjs', reference.fixtureHash), 'Original observation uses the same fixture text');
+        assert.ok(await matchesObservedText('tools/scripts/lib/saga-workbench-unavailable-probe.mjs', reference.probeHash), 'Original observation uses the same probe text');
+        await clickText(h.page, 'New Lorecard');
+        await h.page.locator('[name="title"]').fill('Draft during reload');
+        await clickText(h.page, 'Reload Lorecards'); await source.wait();
+        assert.deepEqual(await h.page.evaluate(readUnavailablePresentation), reference.outcomes.loading);
+        await h.page.evaluate(() => { window.failPublicationOnce = true; }); await source.release();
+        await h.page.waitForFunction(() => document.querySelector('.saga-lore-workbench-view > .saga-lore-empty')?.textContent === 'Controlled reload failure');
+        assert.deepEqual(await h.page.evaluate(readUnavailablePresentation), reference.outcomes.error);
+        await clickText(h.page, 'Reload Lorecards'); await source.wait(); await source.release();
+        await h.page.locator('.saga-lore-workbench-main').waitFor({ state: 'visible' });
+        assert.deepEqual(await h.page.evaluate(readUnavailablePresentation), reference.outcomes.loaded);
+        assert.equal(await h.page.locator('[name="title"]').inputValue(), 'Draft during reload');
+        assert.equal(await h.page.evaluate(() => fixture.persistenceCalls.length), 0);
         assert.deepEqual(h.errors, []);
+    } catch (error) {
+        if (h.captureFailure) await h.captureFailure(error);
+        throw error;
     } finally { await h.stop(); }
 });
 
-test('authoritative same-entry reload updates pristine fields in place and preserves dirty composing buffers', async () => {
-    const h = await setup();
+test('authoritative same-entry reload updates pristine fields in place and preserves dirty composing buffers', async t => {
+    const h = await setup(t);
     try {
         await h.page.evaluate(() => {
             window.pristineTitle = document.querySelector('[name="title"]');
@@ -395,11 +459,14 @@ test('authoritative same-entry reload updates pristine fields in place and prese
         }));
         assert.deepEqual(result, { title: true, fact: true, notes: true, writes: 0 });
         assert.deepEqual(h.errors, []);
+    } catch (error) {
+        if (h.captureFailure) await h.captureFailure(error);
+        throw error;
     } finally { await h.stop(); }
 });
 
-test('ordinary selection and filtering reuse the active pack without hydrating or cloning payloads', async () => {
-    const h = await setup();
+test('ordinary selection and filtering reuse the active pack without hydrating or cloning payloads', async t => {
+    const h = await setup(t);
     try {
         const afterInteractions = await h.page.evaluate(() => {
             window.hydrationClones = 0;
@@ -435,11 +502,14 @@ test('ordinary selection and filtering reuse the active pack without hydrating o
         await h.page.evaluate(() => document.querySelector('.saga-loredeck-workbench-entry-row').click());
         assert.equal(await h.page.evaluate(() => hydrationClones), saved.calls);
         assert.deepEqual(h.errors, []);
+    } catch (error) {
+        if (h.captureFailure) await h.captureFailure(error);
+        throw error;
     } finally { await h.stop(); }
 });
 
-test('saved normalization updates acknowledged fields while a newer edit during reload remains buffered', async () => {
-    const h = await setup();
+test('saved normalization updates acknowledged fields while a newer edit during reload remains buffered', async t => {
+    const h = await setup(t);
     try {
         const source = await gateSource(h, 'performance-custom-a');
         await h.page.evaluate(() => {
@@ -472,11 +542,14 @@ test('saved normalization updates acknowledged fields while a newer edit during 
         }));
         assert.deepEqual(result, { node: true, buffer: 'Newer unsubmitted title', writes: 2, persisted: 'Second submitted title' });
         assert.deepEqual(h.errors, []);
+    } catch (error) {
+        if (h.captureFailure) await h.captureFailure(error);
+        throw error;
     } finally { await h.stop(); }
 });
 
-test('per-open resets preserve query/relevance/category and draft buffers survive registry transitions', async () => {
-    const h = await setup();
+test('per-open resets preserve query/relevance/category and draft buffers survive registry transitions', async t => {
+    const h = await setup(t);
     try {
         const result = await h.page.evaluate(async () => {
             const one = selector => document.querySelector(selector);
@@ -515,11 +588,14 @@ test('per-open resets preserve query/relevance/category and draft buffers surviv
         });
         assert.deepEqual(result, { reset: true, registryReset: true, sameOwner: true, draftBuffers: true, noWrites: true });
         assert.deepEqual(h.errors, []);
+    } catch (error) {
+        if (h.captureFailure) await h.captureFailure(error);
+        throw error;
     } finally { await h.stop(); }
 });
 
-for (const destination of ['closed', 'registries', 'experience']) test(`late lazy import respects ${destination} ownership and mounts latest snapshot once on return`, async () => {
-    const h = await startHarness();
+for (const destination of ['closed', 'registries', 'experience']) test(`late lazy import respects ${destination} ownership and mounts latest snapshot once on return`, async t => {
+    const h = await startHarness(t);
     let release;
     try {
         const gate = new Promise(resolve => { release = resolve; });
@@ -527,7 +603,7 @@ for (const destination of ['closed', 'registries', 'experience']) test(`late laz
         const sawRequest = h.page.waitForRequest('**/src/ui/generated/workbench/view.js');
         await h.page.route('**/src/ui/generated/workbench/view.js', async route => { requests++; await gate; await route.continue(); });
         await h.page.evaluate(async () => {
-            const { installSagaPerformanceFixture } = await import('/tests/browser/performance-fixtures.mjs');
+            const { installSagaPerformanceFixture } = await import('/__performance/performance-fixtures.mjs');
             window.fixture = await installSagaPerformanceFixture({ entryCount: 12 });
             window.panel = await import('/src/loredecks/loredeck-workbench-panel.js');
             fixture.openWorkbench();
@@ -564,17 +640,20 @@ for (const destination of ['closed', 'registries', 'experience']) test(`late laz
         assert.match(await h.page.locator('.saga-lore-workbench-table').textContent(), /Latest during import/);
         assert.equal(requests, 1);
         assert.deepEqual(h.errors, []);
+    } catch (error) {
+        if (h.captureFailure) await h.captureFailure(error);
+        throw error;
     } finally { release?.(); await h.stop(); }
 });
 
-test('failed lazy import reports once, keeps Close usable and never replays a business action', async () => {
-    const h = await startHarness();
+test('failed lazy import reports once, keeps Close usable and never replays a business action', async t => {
+    const h = await startHarness(t);
     try {
         const reports = [];
         h.page.on('console', message => { if (message.text().includes('[Saga] Loredeck Workbench view failed:')) reports.push(message.text()); });
         await h.page.route('**/src/ui/generated/workbench/view.js', route => route.fulfill({ contentType: 'application/javascript', body: "throw new Error('Controlled import failure');" }));
         await h.page.evaluate(async () => {
-            const { installSagaPerformanceFixture } = await import('/tests/browser/performance-fixtures.mjs');
+            const { installSagaPerformanceFixture } = await import('/__performance/performance-fixtures.mjs');
             window.fixture = await installSagaPerformanceFixture({ entryCount: 12 });
             fixture.openWorkbench();
         });
@@ -584,7 +663,11 @@ test('failed lazy import reports once, keeps Close usable and never replays a bu
         assert.equal(await h.page.locator('#saga-loredeck-workbench').count(), 0);
         assert.equal(await h.page.evaluate(() => fixture.persistenceCalls.length), 0);
         assert.deepEqual(h.errors, []);
+    } catch (error) {
+        if (h.captureFailure) await h.captureFailure(error);
+        throw error;
     } finally { await h.stop(); }
 });
 
 registerWorkbenchEditingParity({ setup, gateSource, clickText });
+registerWorkbenchBulkTransitionParity({ setup, gateSource, clickText });

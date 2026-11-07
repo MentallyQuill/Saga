@@ -1,23 +1,26 @@
 import assert from 'node:assert/strict';
-import { mkdir, readFile, writeFile, readdir } from 'node:fs/promises';
-import { createHash } from 'node:crypto';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import sharp from 'sharp';
 import { startSagaPerformanceHarness } from './saga-performance-harness.mjs';
-import { workbenchVisualStates, creatorVisualStates, task1VisualStates } from '../../../tests/browser/workbench-visual-scenarios.mjs';
+import { workbenchVisualStates, creatorVisualStates, task1VisualStates, unavailableVisualMessages } from '../../../tests/browser/workbench-visual-scenarios.mjs';
 import { paintedGeometry, verifyImagePairs, compareVisualPixels } from './saga-cover-visual-evidence.mjs';
+import { parityRuntimeHash, paritySourceRoot, sha256 as hash } from './saga-parity-provenance.mjs';
 
 const baselineRoot = process.env.SAGA_PARITY_BASELINE_ROOT;
 const output = process.env.SAGA_PARITY_VISUAL_OUTPUT;
 assert.ok(baselineRoot && output, 'Declare SAGA_PARITY_BASELINE_ROOT and SAGA_PARITY_VISUAL_OUTPUT');
 await mkdir(output, { recursive: true });
-const hash = bytes => createHash('sha256').update(bytes).digest('hex');
-async function sourceHash(root) {
-    const files = (await Promise.all(['src', 'styles'].map(async dir => (await readdir(path.join(root, dir), { recursive: true, withFileTypes: true })).filter(item => item.isFile()).map(item => path.relative(root, path.join(item.parentPath, item.name)).replaceAll('\\', '/'))))).flat().sort();
-    return hash(Buffer.concat(await Promise.all(files.map(async file => Buffer.concat([Buffer.from(file), await readFile(path.join(root, file))])))));
-}
-const report = { created: new Date().toISOString(), sourceHashes: { baseline: await sourceHash(baselineRoot), candidate: await sourceHash(process.cwd()) },
-    fixtureHash: hash(await readFile('tests/browser/performance-fixtures.mjs')), scenarioHash: hash(await readFile('tests/browser/workbench-visual-scenarios.mjs')), captures: [] };
+const protocolFiles = ['tools/scripts/lib/saga-workbench-visual-parity.mjs', 'tools/scripts/lib/saga-cover-visual-evidence.mjs',
+    'tools/scripts/lib/saga-performance-harness.mjs', 'tools/scripts/lib/saga-parity-provenance.mjs', 'tools/scripts/serve-visual-smoke.mjs'];
+const protocolHashes = async () => Object.fromEntries(await Promise.all(protocolFiles.map(async file => [file, hash(await readFile(file))])));
+const sourceRoots = { baseline: path.resolve(baselineRoot), candidate: paritySourceRoot };
+const sourceHashes = async () => ({ baseline: await parityRuntimeHash(sourceRoots.baseline), candidate: await parityRuntimeHash(sourceRoots.candidate) });
+// Chromium's default compositor produced two byte-exact variants on both
+// sources. Use the same software raster for every pair.
+const chromiumArgs = ['--disable-gpu'];
+const report = { created: new Date().toISOString(), sourceRoots, sourceHashes: await sourceHashes(),
+    protocolHashes: await protocolHashes(), fixtureHash: hash(await readFile('tests/browser/performance-fixtures.mjs')), scenarioHash: hash(await readFile('tests/browser/workbench-visual-scenarios.mjs')), chromiumArgs, captures: [] };
 const profiles = [{ id: 'desktop', viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 },
     { id: 'tablet', viewport: { width: 768, height: 1024 }, deviceScaleFactor: 1 },
     { id: 'phone', viewport: { width: 430, height: 820 }, deviceScaleFactor: 3 }];
@@ -28,16 +31,51 @@ for (const profile of selectedProfiles) for (const theme of ['default', 'custom'
     const capture = { id: `${profile.id}-${theme}-${state}`, profile, theme, state, sides: {} };
     try {
         for (const side of ['baseline', 'candidate']) {
-            const h = await startSagaPerformanceHarness({ ...profile, sourceRoot: side === 'baseline' ? baselineRoot : undefined });
+            const h = await startSagaPerformanceHarness({ ...profile, sourceRoot: sourceRoots[side], chromiumArgs });
             let unblock;
+            const sourceResponses = [];
             try {
                 const gate = new Promise(resolve => { unblock = resolve; });
-                await h.page.route('**/__visual-gate/entries.json', async route => { await gate; await route.fulfill({ contentType: 'application/json', body: '[]' }); });
+                let sourceResponded = false;
+                await h.page.route('**/__visual-gate/entries.json', route => {
+                    const response = (async () => {
+                        if (state === 'error') await h.page.evaluate(() => { window.failVisualPublication = true; });
+                        else await gate;
+                        await route.fulfill({ contentType: 'application/json', body: '[]' });
+                        sourceResponded = true;
+                    })();
+                    sourceResponses.push(response);
+                    return response;
+                });
                 const prepared = await h.page.evaluate(async options => {
                     const module = await import('/__performance/workbench-visual-scenarios.mjs');
                     return module.prepareVisualScenario(options);
                 }, { state, theme });
                 await h.page.evaluate(async () => (await import('/__performance/workbench-visual-scenarios.mjs')).stabilizeVisual());
+                if (state.startsWith('library-')) {
+                    // Opening the Library starts thumbnail requests after its
+                    // card layout settles. Capture once that work has drained.
+                    await h.page.waitForLoadState('networkidle');
+                    await h.page.evaluate(async () => (await import('/__performance/workbench-visual-scenarios.mjs')).stabilizeVisual());
+                }
+                for (const file of prepared.requiredCustomIcons || []) {
+                    assert.ok(await h.page.evaluate(file => Array.from(document.querySelectorAll('#saga-lore-panel img')).some(image => {
+                        const rect = image.getBoundingClientRect();
+                        return image.currentSrc.endsWith(`/${file}`) && image.complete && image.naturalWidth > 0 && rect.width > 0 && rect.height > 0;
+                    }), file), `Rendered custom icon must actually decode and remain visible: ${file}`);
+                }
+                if (state in unavailableVisualMessages) {
+                    const presentation = h.page.locator('.saga-lore-workbench-view > .saga-lore-empty');
+                    assert.equal(await presentation.textContent(), unavailableVisualMessages[state]);
+                    assert.ok(await presentation.isVisible(), `Real ${state} copy must be visible in the screenshot`);
+                    assert.equal(sourceResponses.length, 1, `Exactly one real source request for ${state}`);
+                    assert.equal(sourceResponded, state === 'error', 'Loading remains gated and the error follows a released source response');
+                    prepared.sourcePresentation = { text: unavailableVisualMessages[state], sourceRequests: sourceResponses.length, sourceResponded };
+                }
+                if (prepared.creatorAnchor) {
+                    prepared.creatorContent = await h.page.evaluate(async anchor => (await import('/__performance/workbench-visual-scenarios.mjs')).inspectVisibleCreatorContent(anchor), prepared.creatorAnchor);
+                    assert.ok(prepared.creatorContent.visible, `Opened Creator content must be inside its visible scroll pane: ${prepared.creatorAnchor}`);
+                }
                 const geometry = await h.page.evaluate(async root => (await import('/__performance/workbench-visual-scenarios.mjs')).captureVisualGeometry(root), prepared.root);
                 const prefix = path.join(output, `${capture.id}-${side}`);
                 const png = await h.page.screenshot({ path: `${prefix}.png`, fullPage: true, caret: 'hide' });
@@ -46,13 +84,13 @@ for (const profile of selectedProfiles) for (const theme of ['default', 'custom'
                 const paneScroll = state.startsWith('library-') ? await h.page.evaluate(async () => (await import('/__performance/workbench-visual-scenarios.mjs')).inspectDeferredLibraryImages()) : null;
                 capture.sides[side] = { prepared, browser: h.browserVersion, executablePath: h.executablePath, binaryHash: binaryHashes.get(h.executablePath), screenshot: `${prefix}.png`, screenshotHash: hash(png), geometryHash: hash(JSON.stringify(paintedGeometry(geometry))), paneScroll, errors: h.errors };
                 assert.deepEqual(h.errors, [], `${capture.id} ${side} page errors`);
-            } finally { unblock?.(); await h.stop(); }
+            } finally { unblock?.(); await Promise.allSettled(sourceResponses); await h.stop(); }
         }
         const baseline = await sharp(capture.sides.baseline.screenshot).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
         const candidate = await sharp(capture.sides.candidate.screenshot).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
         assert.deepEqual(candidate.info, baseline.info);
         const before = JSON.parse(await readFile(path.join(output, `${capture.id}-baseline.json`))), after = JSON.parse(await readFile(path.join(output, `${capture.id}-candidate.json`)));
-        const images = await verifyImagePairs(before, after, { baselineRoot, candidateRoot: process.cwd(), dpr: profile.deviceScaleFactor });
+        const images = await verifyImagePairs(before, after, { baselineRoot: sourceRoots.baseline, candidateRoot: sourceRoots.candidate, dpr: profile.deviceScaleFactor });
         const { diff, ...comparison } = compareVisualPixels(baseline.data, candidate.data, baseline.info, images, profile.deviceScaleFactor);
         await writeFile(path.join(output, `${capture.id}-image-evidence.json`), JSON.stringify(images, null, 2));
         capture.comparison = { ...comparison, geometryEqual: capture.sides.baseline.geometryHash === capture.sides.candidate.geometryHash };
@@ -72,11 +110,13 @@ for (const profile of selectedProfiles) for (const theme of ['default', 'custom'
     } catch (error) { capture.error = error.stack; console.error(`${capture.id}: ${error.message}`); }
     report.captures.push(capture); await writeFile(path.join(output, 'index.json'), JSON.stringify(report, null, 2));
 }
-report.finalSourceHashes = { baseline: await sourceHash(baselineRoot), candidate: await sourceHash(process.cwd()) };
+report.finalSourceHashes = await sourceHashes();
 report.finalFixtureHash = hash(await readFile('tests/browser/performance-fixtures.mjs'));
 report.finalScenarioHash = hash(await readFile('tests/browser/workbench-visual-scenarios.mjs'));
+report.finalProtocolHashes = await protocolHashes();
 await writeFile(path.join(output, 'index.json'), JSON.stringify(report, null, 2));
 assert.deepEqual(report.finalSourceHashes, report.sourceHashes, 'Source stayed unchanged through the complete matrix');
 assert.equal(report.finalFixtureHash, report.fixtureHash); assert.equal(report.finalScenarioHash, report.scenarioHash);
+assert.deepEqual(report.finalProtocolHashes, report.protocolHashes, 'Visual collector and helpers stayed unchanged through the complete matrix');
 assert.equal(report.captures.length, states.length * selectedProfiles.length * 2);
 assert.ok(report.captures.every(capture => !capture.error && capture.comparison.unexplainedPixels === 0 && capture.comparison.geometryEqual), 'Paired parity requires exact painted geometry/non-image pixels and only verified derivative content attribution');

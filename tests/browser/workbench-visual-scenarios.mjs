@@ -2,6 +2,7 @@
 export const workbenchVisualStates = ['custom', 'generated', 'bundled', 'empty', 'filtered-empty', 'loading', 'error', 'selection', 'bulk', 'draft', 'editor', 'registries'];
 export const creatorVisualStates = ['creator-closed', 'creator-scope-brief', 'creator-story-outline', 'creator-title-sets', 'creator-context-plan', 'creator-review-queue', 'creator-lorecards', 'creator-deck-health', 'creator-coverage-plan'];
 export const task1VisualStates = ['workbench-100', 'workbench-500', 'workbench-600', 'library-77', 'library-1000', 'runtime-icons'];
+export const unavailableVisualMessages = { loading: 'Loading Lorecards...', error: 'Controlled reload failure' };
 
 export async function prepareVisualScenario({ state, theme }) {
     const { installSagaPerformanceFixture } = await import('/__performance/performance-fixtures.mjs');
@@ -22,15 +23,24 @@ export async function prepareVisualScenario({ state, theme }) {
     const library = state.startsWith('library-');
     const fixture = await installSagaPerformanceFixture({ entryCount: state.startsWith('workbench-') ? Number(state.split('-')[1]) : state === 'empty' ? 0 : library ? 100 : 12,
         library, deckCount: library ? Number(state.split('-')[1]) : 77,
-        type: ['bundled', 'generated', 'error'].includes(state) ? state : 'custom' });
+        type: ['bundled', 'generated'].includes(state) ? state : 'custom' });
     if (state !== 'runtime-icons') document.querySelector('#saga-lore-panel, .saga-lore-panel')?.remove();
     window.visualFixture = fixture;
     const wait = async predicate => { for (let i = 0; i < 300; i++) { if (predicate()) return; await new Promise(resolve => setTimeout(resolve, 10)); } throw new Error(`Visual preparation timed out: ${state}`); };
     if (state === 'runtime-icons') {
         const runtime = await import('/src/runtime/lore-panel.js'); runtime.showLorePanel();
-        const iconSources = Array.from(document.querySelectorAll('#saga-lore-panel img')).map(image => image.src);
-        if (theme === 'custom' && !iconSources.some(src => src.includes('mystic-tab-loredecks-256.png'))) throw new Error('Public custom icon set did not reach the rendered runtime rail');
-        return { root: '#saga-lore-panel', state, theme, iconSources };
+        const root = document.querySelector('#saga-lore-panel');
+        const iconSources = Array.from(root.querySelectorAll('img')).map(image => image.src);
+        const mobile = root.querySelector('.saga-mobile-bottom-bar');
+        if (mobile && !mobile.querySelector('[data-mobile-route="loredecks"][aria-current="page"] .saga-mobile-bottom-exit-icon')) {
+            throw new Error('The active mobile Loredecks route must show the Exit icon');
+        }
+        const requiredCustomIcons = theme === 'custom' ? ['relay-tab-settings-256.png'] : [];
+        if (theme === 'custom' && !mobile) requiredCustomIcons.push('mystic-tab-loredecks-256.png');
+        for (const file of requiredCustomIcons) {
+            if (!iconSources.some(src => src.endsWith(`/${file}`))) throw new Error(`Public custom icon did not reach runtime navigation: ${file}`);
+        }
+        return { root: '#saga-lore-panel', state, theme, iconSources, requiredCustomIcons };
     }
     if (library) {
         fixture.openLibrary(); await wait(() => document.querySelector('.saga-loredeck-library-deck-card, .saga-loredeck-library-inline-folder-row'));
@@ -54,20 +64,46 @@ export async function prepareVisualScenario({ state, theme }) {
         // Each paired state begins from truly closed owners. The candidate must
         // materialize the real requested artifact before tour lookup/geometry.
         for (const details of document.querySelectorAll('details.saga-loredeck-creator-artifact')) { details.open = false; details.dispatchEvent(new Event('toggle')); }
+        creator.refreshLoredeckCreatorWorkbenchBody({ preserveScroll: true });
+        // Public refresh restores its saved scroll in a queued frame. A later
+        // user anchor action starts only after that restoration has finished.
+        await new Promise(resolve => requestAnimationFrame(resolve));
+        const lazy = typeof creator.materializeLoredeckCreatorDisclosure === 'function';
+        const closedOwners = Array.from(document.querySelectorAll('details.saga-loredeck-creator-artifact')).map(details => ({
+            anchor: details.dataset.sagaCreatorAnchor, open: details.open, children: details.children.length,
+        }));
+        const lazyAnchors = creatorVisualStates.slice(1).map(stage => stage.slice('creator-'.length));
+        const actualAnchors = closedOwners.map(owner => owner.anchor).sort();
+        const expectedAnchors = [...lazyAnchors, 'advanced-generation'].sort();
+        if (JSON.stringify(actualAnchors) !== JSON.stringify(expectedAnchors) || closedOwners.some(owner => {
+            const shouldBeUnmounted = lazy && lazyAnchors.includes(owner.anchor);
+            return owner.open || (shouldBeUnmounted ? owner.children !== 1 : owner.children < 2);
+        })) {
+            throw new Error(`Creator owners must start genuinely closed${lazy ? ' and unmounted' : ''}: ${JSON.stringify(closedOwners)}`);
+        }
         const anchor = state.slice('creator-'.length);
         if (anchor !== 'closed') {
+            const tour = ({ 'scope-brief': 'brief', 'story-outline': 'outline', 'title-sets': 'titlePass', 'context-plan': 'planning',
+                'review-queue': 'review', lorecards: 'entries', 'deck-health': 'readiness' })[anchor];
+            if (lazy && tour) {
+                if (!creator.prepareLoredeckCreatorTourTarget(`loredecks.creator.${tour}`)
+                    || !document.querySelector(`[data-saga-tour="loredecks.creator.${tour}"]`)) throw new Error(`Real closed Creator tour target missing: ${tour}`);
+            }
+            const body = document.querySelector('.saga-loredeck-creator-workbench-body');
+            let scrolled = false;
+            body.addEventListener('scrollend', () => { scrolled = true; }, { once: true });
             if (!creator.scrollLoredeckCreatorWorkbenchToAnchor(anchor)) throw new Error(`Missing creator anchor ${anchor}`);
             const owner = document.querySelector(`details[data-saga-creator-anchor="${anchor}"]`);
             if (!owner?.open || owner.children.length < 2) throw new Error(`Creator target not materialized: ${anchor}`);
+            await wait(() => scrolled);
         }
-        return { root: '.saga-loredeck-creator-workbench-overlay', state, theme };
+        return { root: '.saga-loredeck-creator-workbench-overlay', state, theme, lazy, closedOwners, creatorAnchor: anchor === 'closed' ? null : anchor };
     }
     fixture.openWorkbench();
     await wait(() => document.querySelector('.saga-lore-workbench-controls'));
     const one = selector => document.querySelector(selector);
     const button = text => Array.from(document.querySelectorAll('#saga-loredeck-workbench button')).find(node => node.textContent === text);
-    if (state === 'error') { await wait(() => one('.saga-lore-workbench-view > .saga-lore-empty')?.textContent !== 'Loading Lorecards...'); }
-    else await wait(() => one('.saga-lore-workbench-main'));
+    await wait(() => one('.saga-lore-workbench-main'));
     if (state === 'filtered-empty') { const search = one('.saga-lore-workbench-search'); search.value = 'No fixture matches'; search.dispatchEvent(new Event('input')); }
     if (['selection', 'bulk'].includes(state)) {
         one('.saga-loredeck-workbench-entry-row [role="checkbox"]').click();
@@ -80,13 +116,35 @@ export async function prepareVisualScenario({ state, theme }) {
         }
     }
     if (state === 'registries') document.querySelectorAll('.saga-lore-workbench-mode-tab')[1].click();
-    if (state === 'loading') {
+    if (state in unavailableVisualMessages) {
+        if (state === 'error') {
+            const panel = await import('/src/loredecks/loredeck-workbench-panel.js');
+            panel.configureLoredeckWorkbenchPanel({ getFreshLoredeckLibraryPack(id, fallback) {
+                if (window.failVisualPublication) {
+                    window.failVisualPublication = false;
+                    throw new Error(unavailableVisualMessages.error);
+                }
+                return fixture.registry.packs[id] || fallback;
+            } });
+        }
         const pack = fixture.registry.packs['performance-custom-a'];
         pack.manifest = `${location.origin}/__visual-gate/loredeck.json`; pack.manifestData.files = ['entries.json'];
         button('Reload Lorecards').click();
-        await wait(() => one('.saga-lore-workbench-view > .saga-lore-empty')?.textContent === 'Loading Lorecards...');
+        await wait(() => one('.saga-lore-workbench-view > .saga-lore-empty')?.textContent === unavailableVisualMessages[state]);
     }
     return { root: '#saga-loredeck-workbench', state, theme };
+}
+
+export function inspectVisibleCreatorContent(anchor) {
+    const body = document.querySelector('.saga-loredeck-creator-workbench-body');
+    const owner = body.querySelector(`details[data-saga-creator-anchor="${anchor}"]`);
+    const content = owner.children[1];
+    const bounds = content.getBoundingClientRect();
+    const clip = body.getBoundingClientRect();
+    const width = Math.min(bounds.right, clip.right, innerWidth) - Math.max(bounds.left, clip.left, 0);
+    const height = Math.min(bounds.bottom, clip.bottom, innerHeight) - Math.max(bounds.top, clip.top, 0);
+    return { anchor, visible: owner.open && body.scrollTop > 0 && width > 0 && height > 0,
+        scrollTop: body.scrollTop, contentRect: bounds.toJSON(), bodyRect: clip.toJSON() };
 }
 
 export async function stabilizeVisual() {

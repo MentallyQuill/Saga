@@ -6,3 +6,8 @@
 /src/ui/generated/workbench/*.js text eol=lf
 /src/ui/generated/workbench/LICENSE.txt text eol=lf
 /assets/generated/loredeck-covers/*.webp binary
+
+# Immutable Task9 analysis-method fixtures must retain canonical Git LF bytes.
+/tests/fixtures/rendering-performance-9a3/** text eol=lf
+# The sealed acc70381 fixture has CRLF bytes; normalization would change its hash.
+/tests/fixtures/rendering-performance-9a3/tests/browser/performance-fixtures.mjs -text -eol

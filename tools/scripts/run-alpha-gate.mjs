@@ -110,6 +110,19 @@ const syntaxTargets = [
 ];
 
 const gateScripts = [
+  'tools/scripts/test-rendering-performance-acceptance-structure.mjs',
+  'tools/scripts/test-rendering-performance-observation-validation.mjs',
+  'tools/scripts/test-rendering-performance-protocol-fixtures.mjs',
+  'tools/scripts/lib/saga-parity-failure-artifacts.test.mjs',
+  'tools/scripts/test-rendering-performance-image-readiness-unit.mjs',
+  'tools/scripts/test-loredeck-workbench-view-model.mjs',
+  'tools/scripts/test-loredeck-workbench-view-lifetime.mjs',
+  'tools/scripts/test-loredeck-cover-image.mjs',
+  'tools/scripts/test-loredeck-creator-lazy-disclosures.mjs',
+  'tools/scripts/test-loredeck-creator-project-models.mjs',
+  'tools/scripts/test-runtime-tooltip-lifecycle.mjs',
+  'tools/scripts/test-runtime-view-disposal.mjs',
+  'tools/scripts/test-runtime-refresh-reliability.mjs',
   'tools/scripts/test-manifest-alpha.mjs',
   'tools/scripts/test-repository-layout.mjs',
   'tools/scripts/test-basic-readiness.mjs',

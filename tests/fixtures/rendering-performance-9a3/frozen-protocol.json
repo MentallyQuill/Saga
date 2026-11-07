@@ -1,0 +1,35 @@
+{
+  "revision": "b2d7f42605f630fa374ef90a8e769a0fb6b0435c",
+  "createdAt": "2026-11-07T00:47:07.098Z",
+  "method": "boundary-io-clipped-decoded-v1",
+  "protocolHash": "9a3dd0668f9be5b9403977ee2b2e65cf2a614ecf12d2737f15812e61bc94a6a3",
+  "fixtureHash": "acc70381c0758438d0f1f3b59153fc3be876d82b8b764a11e15c78de6e4e6216",
+  "files": [
+    {
+      "path": "tools/scripts/capture-rendering-performance.mjs",
+      "sha256": "527d0379ff0d0002cd7abd80fe0113bfeb8df9d587d5c41de01d8fd82428950b"
+    },
+    {
+      "path": "tools/scripts/lib/saga-performance-harness.mjs",
+      "sha256": "615c6419e7aab5508473405f7c9e81cd6c79f0410533de0310d267be9e1a0a7f"
+    },
+    {
+      "path": "tools/scripts/lib/saga-performance-report.mjs",
+      "sha256": "2d0cd2715627f7063d32d49fa4a40b5c128b5889cbdeb8de18645048c37e501c"
+    },
+    {
+      "path": "tools/scripts/lib/saga-performance-request-journal.mjs",
+      "sha256": "76f73e8d977c6a53875247885ce133863381dfbde02d04995ae9d0aa9c806d00"
+    },
+    {
+      "path": "tools/scripts/serve-visual-smoke.mjs",
+      "sha256": "347a2d1272db1e91d841d0be191fd1c60f660aa18e19879c6ee9ceeb96995682"
+    },
+    {
+      "path": "tools/scripts/lib/saga-performance-image-readiness.mjs",
+      "sha256": "c624e071b5d6e28f3d6a6c6cd35c8089b3238b775e64ddcf40f4a09c0258e7ee"
+    }
+  ],
+  "source": "exact committed Git blobs; unchanged prior frozen fixture",
+  "status": "reviewed code; canonical frozen CLI smoke and artifact gate passed; both full acceptance matrices pending"
+}
