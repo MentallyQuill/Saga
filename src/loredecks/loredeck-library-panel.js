@@ -30,7 +30,7 @@ import {
     createLoredeckActionRow,
     setLoredeckActionButtonBusy,
 } from './loredeck-action-rows.js';
-import { bindLoredeckCoverImage, disposeLoredeckCoverImages, getLoredeckAssetRef } from './loredeck-cover-image.js';
+import { bindLoredeckCoverImage, discardDetachedLoredeckCoverImages, disposeLoredeckCoverImages, getLoredeckAssetRef } from './loredeck-cover-image.js';
 export { getLoredeckAssetRef } from './loredeck-cover-image.js';
 import {
     buildFolderTree,
@@ -473,8 +473,13 @@ function renderLoredeckLibraryOverlayBody(options = {}) {
     loredeckLibraryHierarchyRefreshFrame = 0;
     const previousOverlay = document.querySelector('.saga-loredeck-library-overlay');
     cancelLoredeckLibraryRowRender(previousOverlay?.querySelector('.saga-loredeck-library-hierarchy-list'));
-    disposeLoredeckCoverImages(previousOverlay);
-    previousOverlay?.remove();
+    if (previousOverlay?.firstElementChild?.classList.contains('saga-loredeck-library-shell-mobile')) {
+        previousOverlay.remove();
+        discardDetachedLoredeckCoverImages(previousOverlay);
+    } else {
+        disposeLoredeckCoverImages(previousOverlay);
+        previousOverlay?.remove();
+    }
     if (!loredeckLibraryOpen) return;
 
     if (options.progressiveOpen === true) {

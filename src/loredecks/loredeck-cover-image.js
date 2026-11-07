@@ -3,11 +3,18 @@ import { observePassiveImageDisconnect, observePassiveImageSize } from '../ui/pa
 import { BUNDLED_COVER_ORIGINALS, BUNDLED_COVER_THUMBNAILS } from './generated/loredeck-cover-thumbnails.js';
 
 const imageBindings = new WeakMap();
+const DISCARD_DETACHED_STYLES = Symbol('discard detached cover styles');
 
-export function disposeLoredeckCoverImages(root) {
+export function disposeLoredeckCoverImages(root, mode) {
     if (!root) return;
-    imageBindings.get(root)?.();
-    for (const img of root.querySelectorAll?.('img') || []) imageBindings.get(img)?.();
+    imageBindings.get(root)?.(mode);
+    for (const img of root.querySelectorAll?.('img') || []) imageBindings.get(img)?.(mode);
+}
+
+// Only for permanently replaced subtrees. Regular disposal keeps nodes safe to reuse.
+export function discardDetachedLoredeckCoverImages(root) {
+    if (root?.isConnected !== false) return;
+    disposeLoredeckCoverImages(root, DISCARD_DETACHED_STYLES);
 }
 
 function resolveLoredeckAssetPath(pack = {}, assetPath = '') {
@@ -100,14 +107,14 @@ export function bindLoredeckCoverImage(visual, img, pack, options = {}) {
     let stopSize = () => {};
     let stopDisconnect = () => {};
 
-    function dispose() {
+    function dispose(mode) {
         if (!active) return;
         active = false;
         imageBindings.delete(img);
         img.removeEventListener('error', onError);
         stopSize();
         stopDisconnect();
-        restoreIntrinsicStyles();
+        if (mode !== DISCARD_DETACHED_STYLES || img.isConnected !== false) restoreIntrinsicStyles();
     }
 
     function onError() {

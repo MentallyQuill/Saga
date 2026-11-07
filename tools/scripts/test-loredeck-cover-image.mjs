@@ -380,6 +380,51 @@ test('a detached binding releases its resize and error work; explicit tree dispo
   } finally { platform.restore(); }
 });
 
+test('permanently discarded cover trees release an unmeasured binding without restoring styles', async () => {
+  const platform = installPlatform();
+  try {
+    const { bindLoredeckCoverImage, discardDetachedLoredeckCoverImages } = await loadCoverModule();
+    assert.equal(typeof discardDetachedLoredeckCoverImages, 'function', 'permanent discard must have a separate entry point');
+    const visual = platform.element();
+    const img = new FakeImage(visual);
+    const styleWrites = [];
+    img.style = new Proxy({ aspectRatio: '3 / 2', minWidth: '7px' }, {
+      set(style, name, value) {
+        styleWrites.push([name, value]);
+        return Reflect.set(style, name, value);
+      },
+    });
+    const tree = { get isConnected() { return visual.isConnected; }, querySelectorAll: () => [img] };
+    let fallbacks = 0;
+    const dispose = bindLoredeckCoverImage(visual, img, pack(), { usage: 'list', onOriginalError() { fallbacks++; } });
+    assert.equal(img.src, '');
+    assert.deepEqual([img.style.aspectRatio, img.style.minWidth], ['640 / 1280', '0']);
+    styleWrites.length = 0;
+    discardDetachedLoredeckCoverImages(tree);
+    discardDetachedLoredeckCoverImages({ querySelectorAll: tree.querySelectorAll });
+    assert.equal(platform.observedCount(), 1, 'connected or uncertain trees must stay bound');
+    assert.deepEqual(styleWrites, []);
+
+    visual.isConnected = false;
+    discardDetachedLoredeckCoverImages(tree);
+    discardDetachedLoredeckCoverImages(tree);
+    dispose();
+    assert.equal(platform.observedCount(), 0, 'discard must release size work synchronously');
+    assert.equal(platform.activeCleanupCount(), 0, 'discard must release disconnect work synchronously');
+    assert.deepEqual(styleWrites, []);
+    img.error();
+    await platform.resize(visual, 48, 48);
+    await platform.dpr(3);
+    assert.equal(img.src, '');
+    assert.equal(fallbacks, 0);
+
+    const regular = new FakeImage(platform.element());
+    regular.style = { aspectRatio: '3 / 2', minWidth: '7px' };
+    bindLoredeckCoverImage(regular.ownerVisual, regular, pack(), { usage: 'list' })();
+    assert.deepEqual(regular.style, { aspectRatio: '3 / 2', minWidth: '7px' });
+  } finally { platform.restore(); }
+});
+
 test('portrait density uses the actual overflowing image box while retaining the original intrinsic ratio', async () => {
   const platform = installPlatform();
   try {
