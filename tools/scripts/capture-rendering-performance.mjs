@@ -56,12 +56,15 @@ const profiles = [
 const index = { schemaVersion: 1, createdAt: new Date().toISOString(), sourceRoot, fixtureRoot, sourceRevision, sourceHash, protocolHash, imageReadinessPolicy: SAGA_IMAGE_READINESS_POLICY, fixtureHash, coverHashes, absentCoverPackIds, environment: { platform: process.platform, release: os.release(), arch: process.arch, cpu: os.cpus()[0]?.model, node: process.version }, requestedRuns: { warm: warmRuns, cold: coldRuns }, completeRunCounts: warmRuns >= 30 && coldRuns >= 20, captures: [], limitations: ['The actual 77-deck index declares 70 cover assets; seven DS9 decks retain their existing monogram fallback.', 'At the phone viewport the baseline workbench table is occluded by toolbar/detail layout; real keyboard activation measures row selections, and the pointer-access failure remains recorded.', 'Desktop viewport emulation is not real Android or iOS hardware coverage.', 'CDP task metrics available for Chromium only.', 'Clone/model invocation counts and retained component/listener counts require later structural instrumentation and parity evidence.'] };
 const nextPaint = page => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
 async function install(h, c) {
-    return h.page.evaluate(async options => {
+    const fixture = await h.page.evaluate(async options => {
         const { installSagaPerformanceFixture } = await import('/__performance/performance-fixtures.mjs');
         const fixture = await installSagaPerformanceFixture(options);
         document.querySelector('#saga-lore-panel, .saga-lore-panel')?.remove();
         return { revision: fixture.revision, count: fixture.packs.length };
     }, { ...c, coverPool });
+    // Initialize Playwright's selector engine before timing on every fresh page.
+    assert.equal(await h.page.locator('body').count(), 1);
+    return fixture;
 }
 async function resetMeasurement(page) {
     await page.evaluate(() => {
