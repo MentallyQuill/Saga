@@ -106,10 +106,11 @@ function installPlatform({ cssSupport = 'supported' } = {}) {
   const resizeObservers = new Set();
   const mutationObservers = new Set();
   const queries = new Set();
+  const unobserved = [];
   class ResizeObserver {
     constructor(callback) { this.callback = callback; this.targets = new Set(); resizeObservers.add(this); }
     observe(target) { this.targets.add(target); }
-    unobserve(target) { this.targets.delete(target); }
+    unobserve(target) { unobserved.push(target); this.targets.delete(target); }
     disconnect() { this.targets.clear(); }
   }
   class MutationObserver {
@@ -143,6 +144,7 @@ function installPlatform({ cssSupport = 'supported' } = {}) {
   };
   const settle = async () => { await new Promise(resolve => setTimeout(resolve, 5)); };
   return {
+    unobserved,
     element(width = 0, height = 0) {
       return { isConnected: true, box: { width, height }, getBoundingClientRect() { return { ...this.box, x: 0, y: 0 }; } };
     },
@@ -422,6 +424,55 @@ test('permanently discarded cover trees release an unmeasured binding without re
     regular.style = { aspectRatio: '3 / 2', minWidth: '7px' };
     bindLoredeckCoverImage(regular.ownerVisual, regular, pack(), { usage: 'list' })();
     assert.deepEqual(regular.style, { aspectRatio: '3 / 2', minWidth: '7px' });
+  } finally { platform.restore(); }
+});
+
+test('discarding a list cover unobserves its image once while another target stays active', async () => {
+  const platform = installPlatform();
+  try {
+    const { bindLoredeckCoverImage, discardDetachedLoredeckCoverImages, passiveUrl } = await loadCoverModule();
+    const { observePassiveImageSize } = await import(passiveUrl);
+    const releaseOther = observePassiveImageSize(platform.element(), () => {});
+    const visual = platform.element();
+    const img = new FakeImage(visual);
+    bindLoredeckCoverImage(visual, img, pack(), { usage: 'list' });
+    visual.isConnected = false;
+    discardDetachedLoredeckCoverImages({ isConnected: false, querySelectorAll: () => [img] });
+
+    assert.deepEqual(platform.unobserved, [img], 'only the image was observed for size');
+    assert.equal(platform.observedCount(), 1);
+    releaseOther();
+    assert.equal(platform.observedCount(), 0);
+    assert.equal(platform.activeCleanupCount(), 0);
+  } finally { platform.restore(); }
+});
+
+test('pruned disposers leave a reentrant size subscription on the same element active', async () => {
+  const platform = installPlatform();
+  try {
+    const { passiveUrl } = await loadCoverModule();
+    const { observePassiveImageDisconnect, observePassiveImageSize } = await import(passiveUrl);
+    const target = platform.element();
+    const deliveries = [];
+    const stopFirst = observePassiveImageSize(target, () => {});
+    const stopSecond = observePassiveImageSize(target, () => {});
+    let stopReplacement;
+    const stopDisconnect = observePassiveImageDisconnect(target, () => {
+      target.isConnected = true;
+      stopReplacement = observePassiveImageSize(target, ({ width, dpr }) => deliveries.push([width, dpr]));
+    });
+    stopFirst();
+    assert.equal(platform.observedCount(), 1, 'one remaining callback keeps the target observed');
+    await platform.disconnect(target);
+    stopDisconnect();
+    stopSecond();
+    await platform.resize(target, 48, 48);
+    await platform.dpr(2);
+    assert.deepEqual(deliveries, [[48, 1], [48, 2]]);
+
+    stopReplacement();
+    assert.equal(platform.observedCount(), 0);
+    assert.equal(platform.activeCleanupCount(), 0);
   } finally { platform.restore(); }
 });
 

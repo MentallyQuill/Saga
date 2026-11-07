@@ -1,6 +1,7 @@
 // Shared passive image layout/lifetime observation. There is no image preflight:
 // source selection happens only after the browser delivers a nonzero layout box.
 const subscriptions = new Map();
+let sizeTargetCount = 0;
 let resizeObserver = null;
 let cleanupObserver = null;
 let mediaQuery = null;
@@ -56,7 +57,7 @@ function onWindowResize() {
 }
 
 function stopUnusedObservers() {
-    if (![...subscriptions.values()].some(record => record.sizes.size)) {
+    if (sizeTargetCount === 0) {
         resizeObserver?.disconnect();
         resizeObserver = null;
         if (listeningForSize) globalThis.window?.removeEventListener('resize', onWindowResize);
@@ -75,8 +76,11 @@ function pruneDisconnected() {
     for (const [element, record] of subscriptions) {
         if (element.isConnected) continue;
         subscriptions.delete(element);
-        resizeObserver?.unobserve(element);
-        record.sizes.clear();
+        if (record.sizes.size) {
+            sizeTargetCount--;
+            resizeObserver?.unobserve(element);
+            record.sizes.clear();
+        }
         const callbacks = [...record.disconnects];
         record.disconnects.clear();
         for (const callback of callbacks) callback();
@@ -110,9 +114,7 @@ function getRecord(element) {
 }
 
 function release(element, record) {
-    if (record.sizes.size || record.disconnects.size) return;
-    if (subscriptions.get(element) === record) subscriptions.delete(element);
-    resizeObserver?.unobserve(element);
+    if (!record.sizes.size && !record.disconnects.size && subscriptions.get(element) === record) subscriptions.delete(element);
     stopUnusedObservers();
 }
 
@@ -123,7 +125,7 @@ export function observePassiveImageDisconnect(element, onDisconnect) {
     return () => {
         if (!active) return;
         active = false;
-        record.disconnects.delete(onDisconnect);
+        if (!record.disconnects.delete(onDisconnect)) return;
         release(element, record);
     };
 }
@@ -132,6 +134,7 @@ export function observePassiveImageSize(element, onSize) {
     const record = getRecord(element);
     const first = !record.sizes.size;
     record.sizes.add(onSize);
+    if (first) sizeTargetCount++;
     if (!listeningForSize) {
         listeningForSize = true;
         lastDpr = currentDpr();
@@ -157,9 +160,11 @@ export function observePassiveImageSize(element, onSize) {
     return () => {
         if (!active) return;
         active = false;
-        record.sizes.delete(onSize);
-        if (!record.sizes.size) resizeObserver?.unobserve(element);
+        if (!record.sizes.delete(onSize)) return;
+        if (!record.sizes.size) {
+            sizeTargetCount--;
+            resizeObserver?.unobserve(element);
+        }
         release(element, record);
-        stopUnusedObservers();
     };
 }
