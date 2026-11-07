@@ -77,6 +77,7 @@ function withLoredeckLibraryRenderSnapshot(render) {
         settings: getSettings(),
         healthByPack: new Map(),
         statsByPack: new Map(),
+        coverByPack: new Map(),
     };
     try {
         return render();
@@ -122,6 +123,16 @@ function readLoredeckLibrarySnapshot(name, state, fallback) {
 function getLoredeckStack(state) { return readLoredeckLibrarySnapshot('getLoredeckStack', state, () => []); }
 function getLoredeckLibrary(state) { return readLoredeckLibrarySnapshot('getLoredeckLibrary', state, () => []); }
 function getLoredeckLibraryRegistry(state) { return readLoredeckLibrarySnapshot('getLoredeckLibraryRegistry', state, () => ({ packs: {}, folders: [] })); }
+
+function getLoredeckLibraryCover(pack) {
+    const cache = loredeckLibraryRenderSnapshot?.coverByPack;
+    const cached = cache?.get(pack);
+    if (cached !== undefined) return cached;
+    const cover = getLoredeckAssetRef(pack, 'cover');
+    cache?.set(pack, cover);
+    return cover;
+}
+
 function persistLoredeckLibraryLayout(registry, options) { return dep('persistLoredeckLibraryLayout', () => ({ ok: false, error: 'Loredeck Library storage is unavailable.' }))(registry, options); }
 function normalizeLoredeckLibraryPack(raw) { return dep('normalizeLoredeckLibraryPack', raw => raw || {})(raw); }
 function getLoredeckDefinition(packId) { return dep('getLoredeckDefinition', () => null)(packId); }
@@ -1647,10 +1658,14 @@ function getLoredeckLibraryMobileActiveDeckItems(stack = []) {
 }
 
 function getLoredeckLibraryMobileOrderMap(stack = []) {
+    const snapshot = loredeckLibraryRenderSnapshot;
+    if (snapshot?.mobileOrder?.stack === stack) return snapshot.mobileOrder.map;
+
     const map = new Map();
     getLoredeckLibraryMobileActiveDeckItems(stack).forEach((item, index) => {
         if (!map.has(item.packId)) map.set(item.packId, index + 1);
     });
+    if (snapshot) snapshot.mobileOrder = { stack, map };
     return map;
 }
 
@@ -2158,12 +2173,12 @@ function buildLoredeckLibraryFolderRenderModel(library = [], libraryIndex = {}, 
         const directCoverIds = new Set();
         const directCovers = [];
         for (const pack of directPacks) {
-            if (!getLoredeckAssetRef(pack, 'cover')) continue;
+            if (!getLoredeckLibraryCover(pack)) continue;
             directCoverIds.add(pack.packId);
             directCovers.push(pack);
         }
         const nestedCovers = nestedPacks
-            .filter(pack => !directCoverIds.has(pack.packId) && getLoredeckAssetRef(pack, 'cover'));
+            .filter(pack => !directCoverIds.has(pack.packId) && getLoredeckLibraryCover(pack));
         coverPacksByFolderId.set(folderId, [...directCovers, ...nestedCovers].slice(0, LOREDECK_LIBRARY_FOLDER_COVER_MAX_VISIBLE));
     }
 
@@ -2295,7 +2310,6 @@ function createLoredeckLibraryHierarchyRenderContext(visiblePacks = [], stack = 
         scopedLibrary,
         registry,
         mobileTouch: options.mobileTouch === true,
-        mobileOrderMap: options.mobileTouch === true ? getLoredeckLibraryMobileOrderMap(stack) : new Map(),
         query,
         activeViewId,
         renderModel,
@@ -2353,7 +2367,7 @@ function appendLoredeckLibraryFolderBranch(target, folder = {}, depth = 0, rende
         libraryIndex: renderContext.libraryIndex,
         mobileTouch: renderContext.mobileTouch === true,
         coverPacks: renderContext.renderModel?.getCoverPacks?.(folderId) || [],
-        totalCoverableCount: folderAllPacks.filter(pack => getLoredeckAssetRef(pack, 'cover')).length,
+        totalCoverableCount: folderAllPacks.filter(getLoredeckLibraryCover).length,
     };
     appendLoredeckLibraryHierarchyRow(target, () => createLoredeckLibraryInlineFolderRow(folder, rowOptions), renderContext);
 
@@ -2413,7 +2427,7 @@ function getLoredeckLibraryFolderCoverPacks(folderId = '', library = [], library
     const nested = [];
     for (const pack of library || []) {
         const packFolderId = getLoredeckLibraryPackFolderId(pack, libraryIndex);
-        if (!packFolderId || !folderIds.has(packFolderId) || !getLoredeckAssetRef(pack, 'cover')) continue;
+        if (!packFolderId || !folderIds.has(packFolderId) || !getLoredeckLibraryCover(pack)) continue;
         if (packFolderId === folderId) direct.push(pack);
         else if (isLoredeckLibraryFolderDescendant(packFolderId, folderId, libraryIndex)) nested.push(pack);
     }
@@ -2835,17 +2849,22 @@ function toggleLoredeckLibraryFolderCollapsed(folderId = '', currentCollapsed = 
 function createLoredeckLibraryFolderCoverStrip(coverPacks = [], totalCoverableCount = 0) {
     const strip = document.createElement('div');
     strip.className = 'saga-loredeck-library-folder-cover-strip';
-    const packs = (coverPacks || []).filter(pack => getLoredeckAssetRef(pack, 'cover')).slice(0, LOREDECK_LIBRARY_FOLDER_COVER_MAX_VISIBLE);
-    strip.dataset.totalCovers = String(Math.max(Number(totalCoverableCount) || 0, packs.length));
-    if (!packs.length) {
+    const covers = [];
+    for (const pack of coverPacks || []) {
+        const cover = getLoredeckLibraryCover(pack);
+        if (!cover) continue;
+        covers.push({ pack, cover });
+        if (covers.length === LOREDECK_LIBRARY_FOLDER_COVER_MAX_VISIBLE) break;
+    }
+    strip.dataset.totalCovers = String(Math.max(Number(totalCoverableCount) || 0, covers.length));
+    if (!covers.length) {
         const fallback = document.createElement('span');
         fallback.className = 'saga-loredeck-library-folder-cover-empty';
         fallback.textContent = 'No covers';
         strip.appendChild(fallback);
         return strip;
     }
-    packs.forEach((pack, index) => {
-        const cover = getLoredeckAssetRef(pack, 'cover');
+    covers.forEach(({ pack, cover }, index) => {
         const tile = document.createElement('span');
         tile.className = 'saga-loredeck-library-folder-cover-tile';
         if (cover.fit === 'contain') tile.classList.add('saga-loredeck-library-folder-cover-tile-contain');
@@ -2860,6 +2879,7 @@ function createLoredeckLibraryFolderCoverStrip(coverPacks = [], totalCoverableCo
         tile.appendChild(img);
         bindLoredeckCoverImage(tile, img, pack, {
             usage: 'list',
+            resolvedCover: cover,
             onOriginalError() {
                 tile.classList.remove('saga-loredeck-library-folder-cover-tile-contain');
                 tile.replaceChildren();
@@ -2872,7 +2892,7 @@ function createLoredeckLibraryFolderCoverStrip(coverPacks = [], totalCoverableCo
     const more = document.createElement('span');
     more.className = 'saga-loredeck-library-folder-cover-tile saga-loredeck-library-folder-cover-more';
     more.dataset.coverMore = 'true';
-    const hiddenCount = Math.max(0, Number(strip.dataset.totalCovers) - packs.length);
+    const hiddenCount = Math.max(0, Number(strip.dataset.totalCovers) - covers.length);
     more.hidden = hiddenCount <= 0;
     if (hiddenCount > 0) more.textContent = `+${hiddenCount}`;
     strip.appendChild(more);
@@ -3278,7 +3298,7 @@ function createLoredeckLibraryDeckCard(pack, stack = [], canonDb = null, health 
     const activeItem = stack.find(item => item.packId === pack.packId);
     const healthInfo = getLoredeckLibraryPackHealthInfo(pack, canonDb, health);
     const healthTone = getLoredeckLibraryDisplayHealthTone(pack, healthInfo);
-    const stats = getLoredeckLibraryDeckStats(pack, canonDb, healthInfo);
+    const stats = mobileTouch ? null : getLoredeckLibraryDeckStats(pack, canonDb, healthInfo);
     const card = document.createElement('div');
     card.className = 'saga-loredeck-library-deck-card';
     if (mobileTouch) card.classList.add('saga-loredeck-library-deck-mobile-touch');
@@ -3587,7 +3607,7 @@ function createLoredeckActiveStackFolderCard(item, index, stackLength, library =
     visual.className = 'saga-loredeck-library-monogram saga-loredeck-library-stack-folder-visual';
     visual.appendChild(createLoredeckLibraryFolderCoverStrip(
         getLoredeckLibraryFolderCoverPacks(folderId, library, libraryIndex),
-        preview.allPacks.filter(pack => getLoredeckAssetRef(pack, 'cover')).length
+        preview.allPacks.filter(getLoredeckLibraryCover).length
     ));
     card.appendChild(visual);
 
@@ -4614,9 +4634,9 @@ function createLoredeckLibraryFolderDetailsPanel(folder = {}, stack = [], canonD
     visual.className = 'saga-loredeck-library-detail-monogram saga-loredeck-library-folder-detail-visual';
     visual.appendChild(createLoredeckLibraryFolderCoverStrip(
         folderId === 'unfiled'
-            ? packs.filter(pack => getLoredeckAssetRef(pack, 'cover')).slice(0, LOREDECK_LIBRARY_FOLDER_COVER_MAX_VISIBLE)
+            ? packs.filter(getLoredeckLibraryCover).slice(0, LOREDECK_LIBRARY_FOLDER_COVER_MAX_VISIBLE)
             : getLoredeckLibraryFolderCoverPacks(folderId, library, libraryIndex),
-        packs.filter(pack => getLoredeckAssetRef(pack, 'cover')).length
+        packs.filter(getLoredeckLibraryCover).length
     ));
     identity.appendChild(visual);
 
@@ -5534,7 +5554,7 @@ function createLoredeckCoverActionOverlay(pack = {}, cover = null) {
 export function createLoredeckDeckVisual(pack = {}, className = 'saga-loredeck-library-monogram', options = {}) {
     const visual = document.createElement('div');
     visual.className = `${className} saga-loredeck-library-visual`;
-    const cover = getLoredeckAssetRef(pack, 'cover');
+    const cover = getLoredeckLibraryCover(pack);
     const coverLongPressOnly = options.editableCover === true && options.coverLongPressOnly === true && isEditableLoredeckLibraryPack(pack);
     const coverActions = options.editableCover && !coverLongPressOnly ? createLoredeckCoverActionOverlay(pack, cover) : null;
     if (coverLongPressOnly) {
@@ -5567,6 +5587,7 @@ export function createLoredeckDeckVisual(pack = {}, className = 'saga-loredeck-l
         if (coverActions) visual.appendChild(coverActions);
         bindLoredeckCoverImage(visual, img, pack, {
             usage: options.usage === 'list' ? 'list' : 'detail',
+            resolvedCover: cover,
             onOriginalError() {
                 setLoredeckDeckVisualFallback(visual, pack);
                 if (coverActions) visual.appendChild(coverActions);

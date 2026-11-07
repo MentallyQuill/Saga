@@ -27,15 +27,35 @@ import {
 import { applyRegistryEntryOverrides } from './loredeck-normalizer.js';
 import { loadTagRegistryForHealth } from './tag-registry-health.js';
 
-export async function loadLoredeckEntryFilesForHealth(manifest = {}, baseUrl, health, registryRecord = null, readJsonDetailed, externalTagRegistries = []) {
+const PARALLEL_ENTRY_FILE_BATCH_SIZE = 4;
+
+function* readEntryFiles(files, baseUrl, readJsonDetailed, batchSize) {
+    for (let start = 0; start < files.length; start += batchSize) {
+        const batch = Array.from(files.slice(start, start + batchSize), async file => {
+            try {
+                const url = new URL(file, baseUrl);
+                const result = await readJsonDetailed(url);
+                return { file, url, result };
+            } catch (error) {
+                // Capture failures immediately and surface them in manifest order.
+                return { error };
+            }
+        });
+        yield* batch;
+    }
+}
+
+export async function loadLoredeckEntryFilesForHealth(manifest = {}, baseUrl, health, registryRecord = null, readJsonDetailed, externalTagRegistries = [], { parallelEntryFiles = false } = {}) {
     const files = Array.isArray(manifest.files) ? manifest.files : [];
     const entryFiles = [];
     health.summary.fileCount = files.length;
     analyzeManifestFileListHealth(health, manifest);
 
-    for (const file of files) {
-        const url = new URL(file, baseUrl);
-        const result = await readJsonDetailed(url);
+    const batchSize = parallelEntryFiles ? PARALLEL_ENTRY_FILE_BATCH_SIZE : 1;
+    for (const pending of readEntryFiles(files, baseUrl, readJsonDetailed, batchSize)) {
+        const entryFile = await pending;
+        if ('error' in entryFile) throw entryFile.error;
+        const { file, url, result } = entryFile;
         if (!result.ok) {
             health.summary.missingFileCount += 1;
             addHealthIssue(health, 'error', 'missing_entry_file', `Loredeck entry file failed to load: ${file}.`, {

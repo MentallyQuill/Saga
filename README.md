@@ -12,7 +12,7 @@ It turns canon, alternate-universe, crossover, and user-created lore into modula
 
 Saga is a lore system for deciding what belongs in the story **now**: what is true, what is hidden, who knows what, and what has changed in this chat.
 
-The current state of development is **alpha-release**: `0.4.0-alpha.4` (**Scribe**), with minimum SillyTavern version `1.12.0`. Automatic updates are disabled for alpha builds, so update manually from the repository. Bundled Loredecks include Harry Potter, Jujutsu Kaisen, Middle-earth, My Hero Academia, One Piece, Star Trek, and Star Wars. The desktop/tablet shell, phone-width mobile shell, Story Maker, Deck Maker, Loredeck imports, Pack Health, and Basic/Advanced workflows are functional, but set your expectations for 'alpha'. Stability is being improved with testing, and user feedback is highly valued.
+Saga is now in **beta** with `0.5.0-beta.1` (**Svelte**). It requires SillyTavern `1.12.0` or later. Automatic updates are disabled, so update manually from the repository. Bundled Loredecks include Harry Potter, Jujutsu Kaisen, Middle-earth, My Hero Academia, One Piece, Star Trek, and Star Wars. Feedback is welcome, especially on how the Library, Loredeck Workbench, and Deck Maker feel on your device.
 
 ## Contents
 
@@ -62,6 +62,7 @@ For guided walkthroughs, see [Basic Workflow](docs/user/BASIC_WORKFLOW.md) and [
 
 Release Notes:
 
+- [Saga 0.5.0-beta.1 - Svelte](docs/release/0.5.0-beta.1.md)
 - [Saga Lorecard Context Storage Patch - November 5, 2026](docs/release/2026-11-05-lorecard-context-storage.md): fixes false `0–0` Context gates, recovers recognizable manual and Story Scan cards, and corrects Injection preview explanations.
 - [Saga Reliability Patches - October 6, 2026](docs/release/2026-10-06-reliability-patches.md): post-alpha patches for chat ownership, recoverable storage, checkpoint retries, Context safety, Story Maker resume, and bounded resources.
 - [Saga 0.4.0-alpha.4 - Scribe](docs/release/0.4.0-alpha.4.md)

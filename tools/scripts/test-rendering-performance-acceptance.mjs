@@ -3,7 +3,8 @@ import { test } from 'node:test';
 import { evaluateRenderingPerformance, classifyRenderingInterval, validateRenderingMatrix, combineWarmClassifications } from './lib/saga-rendering-acceptance.mjs';
 import { bootstrapComparison, seededRandom, resample, statistic } from './lib/saga-rendering-statistics.mjs';
 import { syntheticBundle, changeSyntheticCapture, changeSyntheticProof } from './lib/saga-rendering-synthetic-bundle.mjs';
-import { verifiedCoverBytes } from './lib/saga-rendering-evidence.mjs';
+import { expectedVisualPairs, verifiedCoverBytes } from './lib/saga-rendering-evidence.mjs';
+import { creatorVisualStates, task1VisualStates, workbenchVisualStates } from '../../tests/browser/workbench-visual-scenarios.mjs';
 import { loadRenderingBundle } from './lib/saga-rendering-bundle-loader.mjs';
 import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -107,6 +108,22 @@ test('review round 1: empty Library image lists cannot satisfy visual quality', 
     assert.doesNotThrow(() => validateRenderingMatrix(bundle), 'Non-cover states may have empty image lists');
     changeSyntheticProof(bundle, 'visual', proof => { for (const pair of proof.pairs) pair.images = []; });
     assert.throws(() => validateRenderingMatrix(bundle), /Library.*cover/i);
+});
+
+test('a same-count visual substitution cannot hide a missing required scenario', async () => {
+    const states = [...workbenchVisualStates, ...creatorVisualStates, ...task1VisualStates];
+    const ids = ['desktop', 'tablet', 'phone'].flatMap(profile => ['default', 'custom'].flatMap(theme =>
+        states.map(state => `${profile}-${theme}-${state}`)));
+    assert.deepEqual(expectedVisualPairs().map(pair => pair.id), ids);
+    const bundle = await syntheticBundle();
+    assert.doesNotThrow(() => validateRenderingMatrix(bundle), 'The canonical visual inventory is valid');
+    changeSyntheticProof(bundle, 'visual', proof => {
+        const pair = proof.pairs.find(item => item.id === 'tablet-custom-draft');
+        assert.ok(pair, 'Synthetic proof contains the required tablet draft case');
+        pair.state = 'unrelated';
+        pair.id = 'tablet-custom-unrelated';
+    });
+    assert.throws(() => validateRenderingMatrix(bundle), /Missing visual pairs: tablet-custom-draft/);
 });
 
 test('review round 1: identical unrelated files do not prove generated freshness', async () => {

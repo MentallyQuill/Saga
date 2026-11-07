@@ -59,12 +59,6 @@ function normalizeHealth(health) {
     };
 }
 
-function issueCodes(health) {
-    return [...(health.errors || []), ...(health.warnings || []), ...(health.suggestions || [])]
-        .map(issue => `${issue.severity}:${issue.code}:${issue.file || issue.tag || issue.entryId || ''}`)
-        .sort();
-}
-
 // 1. Clean reference decks: browser loader path vs CLI directory path.
 for (const deckId of DEFAULT_HP_LOREDECK_IDS) {
     const browserSource = await loadLoredeckSourceById(deckId);
@@ -152,9 +146,27 @@ await writeFile(path.join(brokenDir, 'entries', 'core.json'), JSON.stringify({
     ],
 }, null, 2));
 
-const browserBroken = await loadLoredeckSourceById('parity-broken-fixture', {
+const fixtureFetch = globalThis.fetch;
+const firstEntryStarted = Promise.withResolvers();
+const releaseFirstEntry = Promise.withResolvers();
+const startedEntryFiles = [];
+globalThis.fetch = async (url) => {
+    const file = path.relative(brokenDir, fileURLToPath(url)).split(path.sep).join('/');
+    if (brokenManifest.files.includes(file)) startedEntryFiles.push(file);
+    if (file === brokenManifest.files[0]) {
+        firstEntryStarted.resolve();
+        await releaseFirstEntry.promise;
+    }
+    return fixtureFetch(url);
+};
+const pendingBrowserBroken = loadLoredeckSourceById('parity-broken-fixture', {
     registryRecord: { manifest: pathToFileURL(path.join(brokenDir, 'loredeck.json')).href },
 });
+await Promise.race([firstEntryStarted.promise, pendingBrowserBroken]);
+const filesStartedWhileFirstWasPending = [...startedEntryFiles];
+releaseFirstEntry.resolve();
+const browserBroken = await pendingBrowserBroken;
+globalThis.fetch = fixtureFetch;
 const cliBroken = await loadLoredeckSourceFromDir(brokenDir);
 
 assert.ok(cliBroken.health.errors.length > 0, 'Broken fixture should produce Pack Health errors.');
@@ -163,16 +175,22 @@ assert.ok(
     'Broken fixture should report the missing entry file.',
 );
 assert.deepEqual(
-    issueCodes(cliBroken.health),
-    issueCodes(browserBroken.health),
-    'Broken fixture: CLI and browser paths must report identical issue lists.',
+    browserBroken.entryFiles.map(file => file.file),
+    brokenManifest.files,
+    'Browser entry files must retain manifest order.',
 );
 assert.deepEqual(
-    normalizeHealth(cliBroken.health).summary,
-    normalizeHealth(browserBroken.health).summary,
-    'Broken fixture: CLI and browser paths must report identical health summaries.',
+    normalizeHealth(cliBroken.health),
+    normalizeHealth(browserBroken.health),
+    'Broken fixture: CLI and browser paths must report identical ordered Pack Health results.',
 );
 
 await rm(fixtureRoot, { recursive: true, force: true });
+
+assert.deepEqual(
+    filesStartedWhileFirstWasPending,
+    brokenManifest.files,
+    'The browser must start the next entry request while the first is pending.',
+);
 
 console.log('Loredeck CLI health parity tests passed.');

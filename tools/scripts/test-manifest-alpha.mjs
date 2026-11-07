@@ -18,30 +18,29 @@ assert.equal(manifest.display_name, 'Saga', 'Manifest display_name should remain
 assert.equal(manifest.key, 'saga', 'Manifest key should remain saga.');
 assert.match(
   manifest.version,
-  /^0\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/,
-  'Alpha manifest version must stay pre-1.0.'
+  /^0\.\d+\.\d+-(?:alpha|beta)\.\d+$/,
+  'Manifest must declare a pre-1.0 alpha or beta version.'
 );
-assert.match(manifest.version, /alpha/i, 'Alpha manifest version should include an alpha prerelease marker.');
-assert.equal(manifest.auto_update, false, 'Alpha manifest must keep auto_update disabled.');
+assert.equal(manifest.auto_update, false, 'Prerelease manifest must keep auto_update disabled.');
 assert.match(
   String(manifest.minimum_client_version || ''),
   /^\d+\.\d+\.\d+$/,
   'Manifest must declare a concrete minimum_client_version.'
 );
 
-assert(readme.includes(manifest.version), 'README Status should mention the manifest alpha version.');
+assert(readme.includes(manifest.version), 'README Status should mention the manifest version.');
 assert(readme.includes(manifest.minimum_client_version), 'README Status should mention the minimum SillyTavern version.');
-assert(readme.includes(`docs/release/${manifest.version}.md`), 'README should link the current alpha release notes.');
-assert.match(readme, /automatic updates are disabled|auto_update.+disabled/i, 'README should document manual alpha updates.');
+assert(readme.includes(`docs/release/${manifest.version}.md`), 'README should link the current release notes.');
+assert.match(readme, /automatic updates are disabled|auto_update.+disabled/i, 'README should document manual updates.');
 assert.match(readme, /does not auto-open/i, 'README Fast Start should document the non-auto-open first-run behavior.');
 
 assert(alphaSystems.includes('node tools/scripts/run-alpha-gate.mjs'), 'Alpha systems doc should publish the release gate command.');
 assert(alphaSystems.includes('auto_update: false'), 'Alpha systems doc should document disabled automatic updates.');
 
-assert(releaseNotes.includes(manifest.version), 'Release notes should mention the manifest alpha version.');
+assert(releaseNotes.includes(manifest.version), 'Release notes should mention the manifest version.');
 assert(releaseNotes.includes(manifest.minimum_client_version), 'Release notes should mention the minimum SillyTavern version.');
 assert(releaseNotes.includes('auto_update: false'), 'Release notes should document disabled automatic updates.');
 assert(releaseNotes.includes('node tools/scripts/run-alpha-gate.mjs'), 'Release notes should publish the release gate command.');
 assert.match(releaseNotes, /Unsupported old imported state schemas are rejected/i, 'Release notes should document unsupported old-schema handling.');
 
-console.log('Alpha manifest contract passed.');
+console.log('Prerelease manifest contract passed.');

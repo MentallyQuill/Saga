@@ -340,29 +340,18 @@ export function hasFiniteContextNumber(value) {
     return value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value));
 }
 
-function hasContextGate(contextGate = {}, coordinates = []) {
-    const fields = [
-        'scope',
-        'anchorId',
-        'validFromAnchor',
-        'validToAnchor',
-        'arc',
-        'arcId',
-        'phase',
-        'phaseId',
-        'season',
-        'episode',
-        'chapter',
-        'issue',
-        'quest',
-        'gameStage',
-        'stardateFrom',
-        'stardateTo',
-    ];
-    if (fields.some(field => cleanHealthString(contextGate[field]))) return true;
-    if (hasFiniteContextNumber(contextGate.sortKeyFrom) || hasFiniteContextNumber(contextGate.sortKeyTo)) return true;
-    return Array.isArray(coordinates) && coordinates.some(item => isPlainObject(item)
-        && [item.axis, item.id, item.from, item.to].some(value => cleanHealthString(value)));
+const CONTEXT_GATE_FIELDS = [
+    'scope', 'anchorId', 'validFromAnchor', 'validToAnchor',
+    'arc', 'arcId', 'phase', 'phaseId', 'season', 'episode', 'chapter',
+    'issue', 'quest', 'gameStage', 'stardateFrom', 'stardateTo',
+];
+
+function hasNormalizedContextGate(contextGate, coordinates) {
+    for (const field of CONTEXT_GATE_FIELDS) {
+        if (contextGate[field]) return true;
+    }
+    // Normalization trims strings and keeps coordinates only when axis or ID is set.
+    return coordinates.length > 0 || Number.isFinite(contextGate.sortKeyFrom) || Number.isFinite(contextGate.sortKeyTo);
 }
 
 function getEntryAnchorReferences(contextGate = {}) {
@@ -452,9 +441,8 @@ export function analyzeEntryContextHealth(health, entryFiles = [], timeline = {}
     for (const fileRecord of entryFiles) {
         for (const rawEntry of fileRecord.entries || []) {
             const entry = normalizeLoreEntry(rawEntry);
-            const contextGate = entry.context || {};
-            const coordinates = Array.isArray(entry.coordinates) ? entry.coordinates : [];
-            if (!hasContextGate(contextGate, coordinates)) continue;
+            const { context: contextGate, coordinates } = entry;
+            if (!hasNormalizedContextGate(contextGate, coordinates)) continue;
 
             contextGateCount += 1;
             const entryId = cleanHealthString(entry.id, 180);

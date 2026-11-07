@@ -4,26 +4,44 @@
  * replaced by the controller so cached cells cannot hide a real edit.
  */
 export function createLoredeckWorkbenchViewModel(input, previous = null) {
-    const prior = new Map((previous?.displayRows || []).map(item => [item.key, item]));
+    const { filteredRows: logicalRows, packId, selectedEntryId } = input;
+    let prior;
+    if (logicalRows.length && previous?.displayRows?.length) {
+        prior = new Map();
+        for (const item of previous.displayRows) prior.set(item.key, item);
+    }
     const selected = new Set(input.selectedIds);
-    const logicalRows = input.filteredRows;
-    const logicalIds = logicalRows.filter(row => row.id && !row.draft).map(row => row.id);
-    const displayRows = logicalRows.slice(0, 500).map(row => {
-        const key = JSON.stringify([input.packId, row.draft ? 'draft' : 'entry', row.id]);
-        const active = row.id === input.selectedEntryId;
-        const checked = !row.draft && selected.has(row.id);
-        const old = prior.get(key);
+    const logicalIds = [];
+    const displayRows = [];
+    let selectedRow = null;
+    let headerChecked = true;
+
+    for (const row of logicalRows) {
+        const { id, draft } = row;
+        const active = id === selectedEntryId;
+        if (active && !selectedRow) selectedRow = row;
+        const displayed = displayRows.length < 500;
+        // Hidden rows only need a membership check while the header can stay checked.
+        const checked = !draft && (displayed || headerChecked) && selected.has(id);
+        if (id && !draft) {
+            logicalIds.push(id);
+            if (!checked) headerChecked = false;
+        }
+        if (!displayed) continue;
+
+        const key = JSON.stringify([packId, draft ? 'draft' : 'entry', id]);
+        const old = prior?.get(key);
         const cells = old?.row === row ? old.cells : input.getCells(row);
-        return old?.row === row && old.active === active && old.checked === checked
-            ? old : { key, row, active, checked, cells };
-    });
+        displayRows.push(old?.row === row && old.active === active && old.checked === checked
+            ? old : { key, row, active, checked, cells });
+    }
 
     return {
         ...input,
         logicalRows,
         logicalIds,
         displayRows,
-        headerChecked: logicalIds.length > 0 && logicalIds.every(id => selected.has(id)),
-        selectedRow: logicalRows.find(row => row.id === input.selectedEntryId) || logicalRows[0] || null,
+        headerChecked: logicalIds.length > 0 && headerChecked,
+        selectedRow: selectedRow || displayRows[0]?.row || null,
     };
 }

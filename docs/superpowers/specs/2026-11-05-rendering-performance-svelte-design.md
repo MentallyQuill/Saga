@@ -1,9 +1,11 @@
 # Saga Rendering Performance and Svelte Design
 
-Status: Draft for review; implementation has not started.
+Status: Implementation in progress; final UI parity and performance acceptance remain pending.
 Date: November 5, 2026.
 Repository baseline: `1a92c708`.
 Builder review: completed; no unresolved planning questions.
+
+The November 6 table ownership experiment moved row reconciliation to a native keyed leaf within the Svelte view. It missed the diagnostic first-open budget and was rejected. The testing build uses the initial Svelte row components. All UI, functionality, browser, build and performance criteria below still apply. [Table ownership amendment and result](2026-11-06-rendering-performance-svelte-ownership-amendment.md)
 
 ## Intent and requirements
 

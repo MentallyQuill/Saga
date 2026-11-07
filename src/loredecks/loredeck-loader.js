@@ -163,7 +163,9 @@ function buildMissingPackMeta(packId, registryRecord, stackPriority, stackIndex,
 }
 
 async function loadEntryFiles(manifest = {}, baseUrl, health, registryRecord = null) {
-    return loadLoredeckEntryFilesForHealth(manifest, baseUrl, health, registryRecord, fetchJsonDetailed);
+    return loadLoredeckEntryFilesForHealth(manifest, baseUrl, health, registryRecord, fetchJsonDetailed, [], {
+        parallelEntryFiles: true,
+    });
 }
 
 export async function loadLoredeckSourceById(packId = DEFAULT_LOREDECK_ID, options = {}) {

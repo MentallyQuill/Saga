@@ -10,9 +10,11 @@
 
 **Spec:** [Saga Rendering Performance and Svelte Design](../specs/2026-11-05-rendering-performance-svelte-design.md).
 
-**State:** Plan only. Snippets below are proposed edits and test additions, not applied production changes. Existing baseline: `1a92c708`; spec commit: `ed5123b0`.
+**State:** Execution in progress. Initial implementations are committed, while final UI parity, first-use performance and integrated acceptance remain unfinished. Snippets below describe the original planned edits and tests; they do not certify final acceptance. Existing baseline: `1a92c708`; spec commit: `ed5123b0`.
 
 **Review:** Independent review completed with no unresolved material findings. JavaScript/JSON snippets passed syntax validation; compiling Svelte and executing the proposed build/runtime tests remain implementation tasks.
+
+The November 6 ownership experiment tested a native keyed table leaf inside the Svelte view. The bounded diagnostic exceeded the first-open budget in five of eight cases across the median and p95 checks. The alternative was rejected, and the testing build uses the initial Svelte row components. Both full matrices passed capture validation. The testing build exceeded the first-open budget and failed the exact visual comparison. [Table ownership amendment and result](../specs/2026-11-06-rendering-performance-svelte-ownership-amendment.md) · [Measured test results](../../development/SAGA_RENDERING_PERFORMANCE.md)
 
 ## Global Constraints
 
@@ -304,6 +306,8 @@ Never infer the logical domain from rendered nodes. Do not normalize or deep-clo
 - [ ] **Step 4:** Require the two tests to pass, including that a status-only update preserves every display descriptor and a selection update changes only the previous/new active descriptors. Commit as `refactor: define workbench view ownership`.
 
 ## Task 6: Build the Svelte View and Reuse Existing Editor Primitives
+
+Execution follow-up: if the controlled table alternative is promoted, replace the per-row compiled rendering in this task with the ownership amendment's isolated keyed-table helper. Keep `mount(target, snapshot, actions)`, `update(snapshot)` and idempotent `dispose()` unchanged. The helper uses the existing descriptor keys and header factory, reuses row/cell/checkbox nodes, initializes tooltips in the real connected ancestry, and disposes resources before removal. It owns no canonical state or business logic. Preserve the original error-once, raw-source, pending-work, generated-build and compatibility gates; update focused tests with equivalent or stronger behavior evidence. No partial timing result completes this task's final acceptance.
 
 **Files:** Create the Svelte/leaf/build files in the map and the adapter test. Modify `runtime-ui-kit.js` for managed tooltips and add its lifecycle test. The production controller is connected in Task 7.
 

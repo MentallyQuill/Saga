@@ -6,6 +6,35 @@ const ready = page => page.locator('.saga-lore-workbench-main').waitFor({ state:
 const confirm = page => page.locator('.saga-confirm-actions button').filter({ hasText: /^Confirm$/ }).click();
 
 export function registerWorkbenchBulkTransitionParity({ setup, gateSource, clickText }) {
+    test('bulk selection buttons update the summary once per click', async t => {
+        const h = await setup(t);
+        try {
+            const result = await h.page.evaluate(async () => {
+                const toolbar = document.querySelector('.saga-loredeck-workbench-bulk-toolbar');
+                const summary = toolbar.querySelector('.saga-loredeck-workbench-bulk-summary');
+                const buttons = [...toolbar.querySelectorAll('button')];
+                let updates = 0;
+                const observer = new MutationObserver(records => { updates += records.length; });
+                observer.observe(summary, { childList: true });
+                const results = [];
+                for (const label of ['Select Visible', 'Clear']) {
+                    buttons.find(button => button.textContent === label).click();
+                    // Include the following frame, when busy actions reconcile.
+                    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+                    results.push({ summary: summary.textContent, updates });
+                    updates = 0;
+                }
+                observer.disconnect();
+                return results;
+            });
+            assert.deepEqual(result, [{ summary: '12 selected', updates: 1 }, { summary: 'No bulk selection', updates: 1 }]);
+            assert.deepEqual(h.errors, []);
+        } catch (error) {
+            if (h.captureFailure) await h.captureFailure(error);
+            throw error;
+        } finally { await h.stop(); }
+    });
+
     test('five bulk field actions persist exactly two selected entries and preserve independent detail and filters', async t => {
         const h = await setup(t);
         try {

@@ -615,6 +615,10 @@ function positionFloatingTooltip(anchor) {
     floatingTooltip.style.top = `${top}px`;
 }
 
+export function hideFloatingTooltipWithin(root) {
+    if (tooltipAnchor && root?.contains(tooltipAnchor)) hideFloatingTooltip();
+}
+
 export function hideFloatingTooltip() {
     if (tooltipFrame !== null) cancelAnimationFrame(tooltipFrame);
     tooltipFrame = null;

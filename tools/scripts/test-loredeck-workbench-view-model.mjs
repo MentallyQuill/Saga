@@ -41,6 +41,27 @@ test('projection keeps the full logical selection domain and caps only displayed
   for (const field of Object.keys(input)) assert.strictEqual(model[field], input[field], field);
 });
 
+test('projection reads each source row once and selects the first matching ID', () => {
+  const rows = [
+    { id: 'same', draft: true, entry: { title: 'Draft' } },
+    { id: 'same', entry: { title: 'First source row' } },
+    { id: 'same', entry: { title: 'Second source row' } },
+  ];
+  const reads = [0, 0, 0];
+  const filteredRows = new Proxy(rows, {
+    get(target, property, receiver) {
+      if (Object.hasOwn(reads, property) && property !== 'length') reads[property]++;
+      return Reflect.get(target, property, receiver);
+    },
+  });
+  const model = createLoredeckWorkbenchViewModel(fixture({ filteredRows, selectedEntryId: 'same', selectedIds: ['same'] }));
+  assert.strictEqual(model.selectedRow, rows[0]);
+  assert.deepEqual(model.logicalIds, ['same', 'same']);
+  assert.deepEqual(model.displayRows.map(row => row.checked), [false, true, true]);
+  assert.equal(model.headerChecked, true);
+  assert.deepEqual(reads, [1, 1, 1]);
+});
+
 test('header selection includes hidden rows and excludes drafts and empty IDs', () => {
   const input = fixture();
   const allIds = Array.from({ length: 600 }, (_, index) => `entry-${index + 1}`);

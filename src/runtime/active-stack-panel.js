@@ -91,8 +91,12 @@ export function getLoredeckStack(state = getState()) {
         .filter(item => getLoredeckStackItemKey(item));
 }
 
+function getLoredeckLibraryPackId(raw) {
+    return String(raw.packId || raw.id || '').trim();
+}
+
 export function normalizeLoredeckLibraryPack(raw = {}) {
-    const packId = String(raw.packId || raw.id || '').trim();
+    const packId = getLoredeckLibraryPackId(raw);
     if (!packId) return null;
     const stats = raw.stats && typeof raw.stats === 'object' && !Array.isArray(raw.stats) ? raw.stats : {};
     const derivedFrom = raw.derivedFrom && typeof raw.derivedFrom === 'object' && !Array.isArray(raw.derivedFrom) ? raw.derivedFrom : null;
@@ -144,9 +148,10 @@ export function normalizeLoredeckLibraryPack(raw = {}) {
     };
 }
 
-export function getLoredeckLibrary(state = getState()) {
+function collectLoredeckLibraryPacks(state, packId = null) {
     const packs = new Map();
     for (const pack of getBundledLoredeckLibraryRecords()) {
+        if (packId !== null && getLoredeckLibraryPackId(pack) !== packId) continue;
         const normalized = normalizeLoredeckLibraryPack(pack);
         if (normalized) packs.set(normalized.packId, normalized);
     }
@@ -154,10 +159,19 @@ export function getLoredeckLibrary(state = getState()) {
     const registryPacks = registry?.packs && typeof registry.packs === 'object' && !Array.isArray(registry.packs)
         ? registry.packs
         : {};
-    for (const pack of Object.values(registryPacks)) {
+    // The registry keys each record by its normalized pack ID.
+    const records = packId === null
+        ? Object.values(registryPacks)
+        : (Object.prototype.hasOwnProperty.call(registryPacks, packId) ? [registryPacks[packId]] : []);
+    for (const pack of records) {
         const normalized = normalizeLoredeckLibraryPack(pack);
         if (normalized) packs.set(normalized.packId, { ...(packs.get(normalized.packId) || {}), ...normalized });
     }
+    return packs;
+}
+
+export function getLoredeckLibrary(state = getState()) {
+    const packs = collectLoredeckLibraryPacks(state);
     return [...packs.values()].sort((a, b) => {
         const typeOrder = { bundled: 0, custom: 1, generated: 2 };
         return (typeOrder[a.type] ?? 9) - (typeOrder[b.type] ?? 9)
@@ -190,7 +204,8 @@ export function getLoredeckTypeLabel(packId) {
 }
 
 export function getLoredeckDefinition(packId) {
-    return getLoredeckLibrary().find(pack => pack.packId === packId) || null;
+    if (typeof packId !== 'string' || !packId) return null;
+    return collectLoredeckLibraryPacks(getState(), packId).get(packId) || null;
 }
 
 export function getLoredeckStackMetric(state = getState()) {

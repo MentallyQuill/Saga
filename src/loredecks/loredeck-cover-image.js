@@ -65,12 +65,16 @@ function coversBox(variant, box, dpr, fit) {
     return scale * dpr <= 1;
 }
 
+function selectCoverVariant(candidates, box, dpr, fit) {
+    return candidates?.find(candidate => coversBox(candidate, box, dpr, fit));
+}
+
 export function getLoredeckCoverSources(pack, { usage = 'detail', box, dpr = 1 } = {}) {
     const cover = getLoredeckAssetRef(pack);
     const originalSrc = getAssetSrc(cover);
     if (usage !== 'list' || !originalSrc) return { src: originalSrc, originalSrc };
     const ratio = Number.isFinite(Number(dpr)) && Number(dpr) > 0 ? Number(dpr) : 1;
-    const variant = variantsByOriginalSrc.get(originalSrc)?.find(candidate => coversBox(candidate, box, ratio, cover.fit));
+    const variant = selectCoverVariant(variantsByOriginalSrc.get(originalSrc), box, ratio, cover.fit);
     return { src: variant?.src || originalSrc, originalSrc };
 }
 
@@ -79,11 +83,14 @@ export function bindLoredeckCoverImage(visual, img, pack, options = {}) {
     const usage = options.usage === 'list' ? 'list' : 'detail';
     img.loading = usage === 'detail' ? 'eager' : 'lazy';
     img.decoding = 'async';
-    const cover = getLoredeckAssetRef(pack);
+    // Cover edits rebuild the visual and bind it with fresh asset metadata.
+    const cover = options.resolvedCover ?? getLoredeckAssetRef(pack);
     const originalSrc = getAssetSrc(cover);
     const intrinsic = intrinsicSizeByOriginalSrc.get(originalSrc);
     const canPreserveIntrinsicRatio = usage === 'list' && intrinsic?.width > 0 && intrinsic?.height > 0
         && globalThis.CSS?.supports?.('aspect-ratio', '1 / 1') === true;
+    // Older engines cannot preserve the intrinsic crop with rounded thumbnails.
+    const candidates = canPreserveIntrinsicRatio ? variantsByOriginalSrc.get(originalSrc) : undefined;
     let restoreIntrinsicStyles = () => {};
     if (canPreserveIntrinsicRatio) {
         const previousRatio = img.style.aspectRatio;
@@ -102,8 +109,7 @@ export function bindLoredeckCoverImage(visual, img, pack, options = {}) {
     }
     let active = true;
     let source = '';
-    let usingDerivative = false;
-    let originalLocked = false;
+    let currentVariant = null;
     let stopSize = () => {};
     let stopDisconnect = () => {};
 
@@ -119,10 +125,10 @@ export function bindLoredeckCoverImage(visual, img, pack, options = {}) {
 
     function onError() {
         if (!active) return;
-        if (usingDerivative) {
-            usingDerivative = false;
-            originalLocked = true;
+        if (currentVariant) {
+            currentVariant = null;
             source = originalSrc;
+            stopSize();
             img.removeAttribute('srcset');
             img.src = originalSrc;
             return;
@@ -131,20 +137,16 @@ export function bindLoredeckCoverImage(visual, img, pack, options = {}) {
         options.onOriginalError?.();
     }
 
-    function selectSource({ width, height, dpr }) {
-        if (!active || originalLocked || !(width > 0 && height > 0)) return;
-        if (source === originalSrc) return;
-        const candidates = variantsByOriginalSrc.get(originalSrc);
-        const current = candidates?.find(variant => variant.src === source);
-        if (current && coversBox(current, { width, height }, dpr, cover?.fit)) return;
-        // Older engines cannot retain the original intrinsic grid crop while
-        // using rounded thumbnail dimensions. Keep their original image/styles.
-        const next = canPreserveIntrinsicRatio
-            ? getLoredeckCoverSources(pack, { usage, box: { width, height }, dpr }).src
-            : originalSrc;
+    function selectSource(size) {
+        if (!active || source === originalSrc || !(size.width > 0 && size.height > 0)) return;
+        if (currentVariant && coversBox(currentVariant, size, size.dpr, cover?.fit)) return;
+        const variant = selectCoverVariant(candidates, size, size.dpr, cover?.fit);
+        const next = variant?.src || originalSrc;
         if (!next || source === next) return;
         source = next;
-        usingDerivative = next !== originalSrc;
+        currentVariant = next === originalSrc ? null : variant;
+        // Once the original is chosen, later sizes cannot change the source.
+        if (!currentVariant) stopSize();
         img.src = next;
     }
 

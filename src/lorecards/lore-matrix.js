@@ -25,14 +25,6 @@ const DEFAULT_CATEGORIES = [
 
 const DEFAULT_CANON_STATUS = ['canon', 'au'];
 
-const DEFAULT_TRUTH_STATUS = [
-    'true', 'false', 'public-belief', 'public_belief', 'rumor', 'contested', 'hidden',
-];
-
-const DEFAULT_REVEAL_POLICIES = [
-    'public', 'private', 'do_not_reveal', 'only_if_knower_present', 'only_if_user_reveals',
-];
-
 export const LORE_RELEVANCE_STATUSES = LORE_RELEVANCE_TIERS;
 // Compatibility export for older UI/import paths. Lifecycle is deprecated; Relevance is the user-facing control.
 export const LORE_LIFECYCLE_STATUSES = ['high', 'normal', 'low'];
@@ -80,6 +72,7 @@ function asStringArray(value) {
 }
 
 function uniqueLimitedStringArray(values, limit = 32) {
+    if (values === undefined || values === null) return [];
     const seen = new Set();
     const out = [];
 
@@ -155,25 +148,21 @@ function stableIdFromTitle(title, fallback = 'lore_entry') {
     return base || fallback;
 }
 
-function normalizeEnum(value, fallback, allowed = null) {
-    const raw = asString(value);
-    if (!raw) return fallback;
-    if (!allowed) return raw;
-    const set = new Set(allowed);
-    return set.has(raw) ? raw : raw;
-}
+const SIMPLE_LORE_TAG = /^[A-Za-z0-9_-]+$/;
 
 export function normalizeLoreTag(value) {
-    const cleaned = String(value || '')
-        .trim()
+    const text = String(value || '').trim();
+    if (SIMPLE_LORE_TAG.test(text)) return text.slice(0, 32);
+
+    const cleaned = text
         .replace(/[\r\n]+/g, ' ')
         .replace(/[^\p{L}\p{N} _-]+/gu, '')
         .replace(/\s+/g, ' ')
         .trim();
 
-    if (!cleaned) return '';
+    if (!cleaned.includes(' ')) return cleaned.slice(0, 32);
 
-    const words = cleaned.split(' ').filter(Boolean);
+    const words = cleaned.split(' ');
     const compact = words.length > 3 ? words.slice(0, 3).join(' ') : cleaned;
     return compact.slice(0, 32).trim();
 }
@@ -381,27 +370,33 @@ function normalizeLifecycle(input) {
     };
 }
 
+const KNOWN_SCOPE_FIELDS = new Set(['characters', 'locations', 'factions', 'topics', 'objects', 'spells', 'schoolYears', 'books', 'eras']);
+
+function normalizeScopeAliases(value, alias, limit) {
+    if ((value === undefined || value === null) && (alias === undefined || alias === null)) return [];
+    return uniqueLimitedStringArray([value, alias], limit);
+}
+
 function normalizeScope(input) {
     const raw = asPlainObject(input.scope);
     const activeWhen = asPlainObject(input.activeWhen);
     const appliesTo = asStringArray(input.appliesTo);
-    const knownScopeFields = new Set(['characters', 'locations', 'factions', 'topics', 'objects', 'spells', 'schoolYears', 'books', 'eras']);
     const extra = {};
 
     for (const [key, value] of Object.entries(raw)) {
-        if (!knownScopeFields.has(key)) extra[key] = value;
+        if (!KNOWN_SCOPE_FIELDS.has(key)) extra[key] = value;
     }
 
     return {
         characters: uniqueLimitedStringArray([raw.characters, activeWhen.charactersPresentAny, appliesTo], 32),
-        locations: uniqueLimitedStringArray([raw.locations, activeWhen.locationsAny], 32),
+        locations: normalizeScopeAliases(raw.locations, activeWhen.locationsAny, 32),
         factions: uniqueLimitedStringArray(raw.factions, 24),
-        topics: uniqueLimitedStringArray([raw.topics, activeWhen.tagsAny], 40),
+        topics: normalizeScopeAliases(raw.topics, activeWhen.tagsAny, 40),
         objects: uniqueLimitedStringArray(raw.objects, 24),
         spells: uniqueLimitedStringArray(raw.spells, 24),
         schoolYears: uniqueLimitedStringArray(raw.schoolYears, 12),
         books: uniqueLimitedStringArray(raw.books, 12),
-        eras: uniqueLimitedStringArray([raw.eras, activeWhen.erasAny], 24),
+        eras: normalizeScopeAliases(raw.eras, activeWhen.erasAny, 24),
         ...extra,
     };
 }
@@ -576,8 +571,8 @@ export function normalizeLoreEntry(input = {}) {
     const status = asString(input.status);
     const canon = normalizeLoreCanon(input.canon || input.canonStatus, deriveSourceString(sourceInfo, input));
     const canonStatus = canon;
-    const truthStatus = normalizeEnum(input.truthStatus, 'true', DEFAULT_TRUTH_STATUS);
-    const revealPolicy = normalizeEnum(input.revealPolicy, 'private', DEFAULT_REVEAL_POLICIES);
+    const truthStatus = asString(input.truthStatus) || 'true';
+    const revealPolicy = asString(input.revealPolicy) || 'private';
     const priority = asPriority(input.priority);
     const source = deriveSourceString(sourceInfo, input);
     const relevance = normalizeLoreRelevance(input.relevance || input.lifecycle?.status || input.lifecycle?.computedStatus || input.status || 'normal');

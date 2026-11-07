@@ -15,13 +15,9 @@ Saga alpha is ready when users can:
 
 Alpha is not the same as public polish. It can still have limited bundled fandom coverage, incomplete advanced automation, and rougher creator workflows, but the foundational architecture should be stable enough that user feedback is meaningful.
 
-## Current Development Stage
+## Integration Coverage
 
-Saga is currently in **pre-alpha integration hardening**.
-
-Most foundational systems now exist in some form: the runtime shell, Loredeck Library, active stack, Context tab/browser, Deck Health Center, Theme/Icon Sets, Lore Assistant groundwork, Deck Maker batching, Pending Review, and the split Harry Potter reference deck family.
-
-The main risk has shifted from missing features to cross-system correctness. The next phase must prove that the core runtime loop works end to end:
+The integration checks cover the core runtime loop end to end.
 
 ```text
 loaded Loredecks
@@ -45,9 +41,9 @@ The HP reference-deck conformance check now exists at `tools/scripts/test-hp-ref
 
 ## Release Metadata And Gate
 
-The alpha manifest should stay visibly pre-1.0. Current release metadata is `0.4.0-alpha.4` (**Scribe**) with `minimum_client_version` set and `auto_update: false`. Alpha testers should update deliberately from the repository instead of receiving silent extension updates. The manifest also declares SillyTavern lifecycle hooks for install, update, delete, clean, enable, disable, and activate so Saga can create current-chat safety records, clear prompt injection, and clean direct provider key material when those extension actions run.
+Current release metadata is `0.5.0-beta.1` (**Svelte**) with `minimum_client_version` set and `auto_update: false`. Testers update manually from the repository. The manifest also declares SillyTavern lifecycle hooks for install, update, delete, clean, enable, disable, and activate so Saga can create current-chat safety records, clear prompt injection, and clean direct provider key material when those extension actions run.
 
-Before tagging an alpha build, run:
+Before tagging a prerelease, run the existing release gate.
 
 ```powershell
 node tools/scripts/run-alpha-gate.mjs

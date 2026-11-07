@@ -4,9 +4,9 @@ import { performance } from 'node:perf_hooks';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { configureLoredeckHealthPanel } from '../../src/loredecks/loredeck-health-panel.js';
-import { DEFAULT_SETTINGS } from '../../src/state/constants.js';
+import { DEFAULT_SETTINGS, MODULE_KEY, getDefaultState } from '../../src/state/constants.js';
 import { configureLoredeckLibraryStore, getLoredeckLibraryRegistry } from '../../src/state/loredeck-library-store.js';
-import { getLoredeckLibrary, getLoredeckStack, getLoredeckTypeLabel } from '../../src/runtime/active-stack-panel.js';
+import { getLoredeckDefinition, getLoredeckLibrary, getLoredeckStack, getLoredeckTypeLabel } from '../../src/runtime/active-stack-panel.js';
 import { buildLoredeckHealthPackSummary } from '../../src/loredecks/loredeck-health-panel.js';
 import { resolveLoredeckStackItems } from '../../src/loredecks/loredeck-library-index.js';
 import {
@@ -20,7 +20,7 @@ import {
 const panelPath = fileURLToPath(new URL('../../src/loredecks/loredeck-library-panel.js', import.meta.url));
 const source = (await readFile(panelPath, 'utf8')).replace(/from\s+(['"])(\.[^'"]+)\1/g,
   (_, quote, relative) => `from ${quote}${pathToFileURL(path.resolve(path.dirname(panelPath), relative)).href}${quote}`);
-const panel = await import(`data:text/javascript;base64,${Buffer.from(`${source}\nexport { getLoredeckLibraryPackHealthInfo, buildLoredeckLibraryFolderRenderModel, getLoredeckLibraryOverlayContext };\nexport const renderSnapshot = typeof withLoredeckLibraryRenderSnapshot === 'function' ? withLoredeckLibraryRenderSnapshot : callback => callback();`).toString('base64')}`);
+const panel = await import(`data:text/javascript;base64,${Buffer.from(`${source}\nexport { getLoredeckLibraryPackHealthInfo, buildLoredeckLibraryFolderRenderModel, getLoredeckLibraryOverlayContext, getLoredeckLibraryMobileOrderMap };\nexport const renderSnapshot = typeof withLoredeckLibraryRenderSnapshot === 'function' ? withLoredeckLibraryRenderSnapshot : callback => callback();`).toString('base64')}`);
 
 let libraryReads = 0;
 const health = {
@@ -67,6 +67,47 @@ health.summary.warningCount = 2;
 panel.renderSnapshot(() => assert.equal(panel.getLoredeckLibraryPackHealthInfo(deck).warningCount, 2,
   'A later refresh must observe changes to the health cache.'));
 assert.equal(healthReads, 2);
+
+const mobileStack = [{ packId: 'alpha' }, { packId: 'beta' }];
+let stackTypeReads = 0;
+panel.configureLoredeckLibraryPanel({ getLoredeckStackItemType: () => { stackTypeReads++; return 'deck'; } });
+panel.renderSnapshot(() => {
+  for (let row = 0; row < 20; row++) {
+    assert.deepEqual([...panel.getLoredeckLibraryMobileOrderMap(mobileStack)], [['alpha', 1], ['beta', 2]]);
+  }
+});
+assert.equal(stackTypeReads, 2, 'Rows in one render batch must share the active order map.');
+mobileStack.reverse();
+panel.renderSnapshot(() => {
+  assert.deepEqual([...panel.getLoredeckLibraryMobileOrderMap(mobileStack)], [['beta', 1], ['alpha', 2]]);
+});
+assert.equal(stackTypeReads, 4, 'A later batch must read the latest active order even for the same stack array.');
+
+let coverReads = 0;
+let coverPath = 'content/loredecks/cover-deck/assets/cover.png';
+const coverDeck = {
+  packId: 'cover-deck',
+  title: 'Cover Deck',
+  assets: { get cover() { coverReads++; return coverPath; } },
+};
+const coverIndex = {
+  folders: [{ id: 'parent' }, { id: 'child', parentId: 'parent' }],
+  deckPlacements: [{ deckId: coverDeck.packId, folderId: 'child' }],
+};
+panel.renderSnapshot(() => {
+  const model = panel.buildLoredeckLibraryFolderRenderModel([coverDeck], coverIndex);
+  assert.deepEqual(model.getCoverPacks('parent'), [coverDeck]);
+  assert.deepEqual(model.getCoverPacks('child'), [coverDeck]);
+});
+assert.equal(coverReads, 1, 'Nested folder cover summaries share one resolution per deck.');
+coverPath = '';
+panel.renderSnapshot(() => {
+  const model = panel.buildLoredeckLibraryFolderRenderModel([coverDeck], coverIndex);
+  assert.deepEqual(model.getCoverPacks('parent'), []);
+  assert.deepEqual(model.getCoverPacks('child'), []);
+});
+assert.equal(coverReads, 2, 'The next render observes a removed cover and shares its missing result.');
+
 assert.throws(() => panel.renderSnapshot(() => { throw new Error('Render failed'); }), /Render failed/);
 health.summary.warningCount = 3;
 panel.renderSnapshot(() => assert.equal(panel.getLoredeckLibraryPackHealthInfo(deck).warningCount, 3,
@@ -121,3 +162,30 @@ assert.deepEqual(sortLoredeckLibraryFolderPacks([
 assert.deepEqual(sortLoredeckLibraryFolderTreeByTitle([{ id: 'b', title: 'Folder 10' }, { id: 'a', title: 'Folder 2' }]).map(folder => folder.id),
   ['a', 'b'], 'Folder titles keep numeric title ordering.');
 assert(placementReads <= 2, 'Manual sorting must index placements once instead of scanning the registry for every comparison.');
+
+const lookupState = { ...getDefaultState(), loredeckRegistry: { packs: {
+  'lookup-target': { packId: 'lookup-target', title: 'Chat Definition' },
+} } };
+const lookupSettings = { loredeckLibrary: { packs: {
+  'old-library-key': { packId: ' lookup-target ', title: 'Library Definition' },
+  'unrelated-deck': { title: 'Unrelated Lookup Fixture' },
+} } };
+const lookupContext = { chatMetadata: { [MODULE_KEY]: lookupState } };
+globalThis.SillyTavern = { getContext: () => lookupContext };
+configureLoredeckLibraryStore({ getSettings: () => lookupSettings });
+const bundledDefinition = getLoredeckLibrary(lookupState).find(pack => pack.type === 'bundled');
+let unrelatedTitleComparisons = 0;
+const localeCompare = String.prototype.localeCompare;
+String.prototype.localeCompare = function (...args) {
+  if ([String(this), args[0]].includes('Unrelated Lookup Fixture')) unrelatedTitleComparisons++;
+  return localeCompare.apply(this, args);
+};
+try {
+  assert.equal(getLoredeckDefinition('lookup-target').title, 'Library Definition');
+  assert.deepEqual(getLoredeckDefinition(bundledDefinition.packId), bundledDefinition);
+  assert.equal(getLoredeckDefinition('old-library-key'), null);
+  assert.equal(getLoredeckDefinition(' lookup-target '), null);
+} finally {
+  String.prototype.localeCompare = localeCompare;
+}
+assert.equal(unrelatedTitleComparisons, 0, 'Looking up a deck must not sort the entire Library.');

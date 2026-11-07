@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { expectedMatrix, ACCEPTANCE_METHOD } from './saga-rendering-acceptance.mjs';
-import { sha256, PROTOCOL_FILES, ORIGINAL_BASELINE_REVISION } from './saga-rendering-evidence.mjs';
+import { expectedVisualPairs, sha256, PROTOCOL_FILES, ORIGINAL_BASELINE_REVISION } from './saga-rendering-evidence.mjs';
 import { SAGA_IMAGE_READINESS_POLICY } from './saga-performance-image-readiness.mjs';
 export async function syntheticBundle(role = 'candidate', { sourceRevision = role === 'baseline' ? ORIGINAL_BASELINE_REVISION : 'cccccccccccccccccccccccccccccccccccccccc' } = {}) {
     const artifacts = new Map();
@@ -63,15 +63,11 @@ export async function syntheticBundle(role = 'candidate', { sourceRevision = rol
     const cases = Array.from({ length: 36 }, (_, i) => `case ${i}`), tap = put('evidence/functional.tap', '# pass 36\n# fail 0\n');
     proof('functional', { runs: ['chromium', 'firefox', 'webkit'].map(engine => ({ engine, caseCount: 36, cases, sourceHash, tap })) });
     const png = put('evidence/visual.png', pngBytes);
-    const profiles = [
-        { id: 'desktop', viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 },
-        { id: 'tablet', viewport: { width: 768, height: 1024 }, deviceScaleFactor: 1 },
-        { id: 'phone', viewport: { width: 430, height: 820 }, deviceScaleFactor: 3 },
-    ];
-    const visualPair = (profile, theme, state, covers = false) => {
+    const pairs = expectedVisualPairs().map(scenario => {
+        const { profile, state } = scenario;
         const comparison = { geometryEqual: true, changedPixels: 0, unexplainedPixels: 0, perImage: [] };
-        const pair = { id: `${profile.id}-${theme}-${state}`, profile, theme, state, baseline: png, candidate: png, comparison, images: [] };
-        if (covers) {
+        const pair = { ...scenario, baseline: png, candidate: png, comparison, images: [] };
+        if (state === 'library-77' || state === 'library-1000') {
             const clip = { left: 0, top: 0, right: 32, bottom: 32 };
             const selected = derivative ?? asset;
             const image = { index: 0, visible: true, original: coverPath, selected: selected.path, rect: [0, 0, 32, 32], fit: 'cover', focal: '50% 50%', verifiedDerivative: Boolean(derivative),
@@ -85,9 +81,8 @@ export async function syntheticBundle(role = 'candidate', { sourceRevision = rol
             pair.images.push(image);
         }
         return pair;
-    };
-    const libraryPairs = profiles.flatMap(profile => ['default', 'custom'].flatMap(theme => ['library-77', 'library-1000'].map(state => visualPair(profile, theme, state, true))));
-    proof('visual', { pairs: [...libraryPairs, ...Array.from({ length: 150 }, (_, index) => visualPair(profiles[0], 'default', `synthetic-${index}`))] });
+    });
+    proof('visual', { pairs });
     const counts = { views: 0, listeners: 0, timers: 0, detachedEditors: 0, pendingJobs: 0 };
     proof('lifecycle', { cycles: 5, settledMs: 100, collectionMethod: 'synthetic', before: counts, after: counts });
     proof('structure', { unaffectedRowsCompared: 499, replacedUnaffectedRows: 0, cloneCallsPerRequest: [1], selectionFullPayloadModelCalls: [0], closedFactories: Object.fromEntries(['scope-brief', 'context-plan', 'coverage-plan', 'story-outline', 'title-sets', 'review-queue', 'lorecards', 'deck-health'].map(name => [name, 0])) });

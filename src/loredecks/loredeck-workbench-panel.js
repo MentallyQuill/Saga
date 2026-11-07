@@ -12,6 +12,7 @@ import {
     createManagedTooltip,
     disposeRuntimeTooltips,
     hideFloatingTooltip,
+    hideFloatingTooltipWithin,
     humanizeScopeKey,
     toast,
     wireOverlayBackdropClose,
@@ -44,6 +45,7 @@ const LOREDECK_WORKBENCH_ID = 'saga-loredeck-workbench';
 let loredeckWorkbenchDeps = {};
 let loredeckWorkbenchPackId = '';
 let loredeckWorkbenchPack = null;
+let loredeckWorkbenchSourceLabel = '';
 let loredeckWorkbenchQuery = '';
 let loredeckWorkbenchRelevanceFilter = 'all';
 let loredeckWorkbenchCategoryFilter = 'all';
@@ -57,7 +59,7 @@ let loredeckWorkbenchCache = {
     error: '',
     loadedAt: 0,
     rows: [],
-    source: null,
+    fileCount: 0,
 };
 let loredeckWorkbenchSaveState = {
     packId: '',
@@ -113,7 +115,15 @@ function reportWorkbenchViewError(error) {
 }
 
 export function configureLoredeckWorkbenchPanel(deps = {}) {
-    loredeckWorkbenchDeps = { ...loredeckWorkbenchDeps, ...(deps || {}) };
+    const incoming = deps || {};
+    // A replacement provider may need the list or definition as its fallback.
+    const replacesPackLookup = ['getState', 'getLoredeckLibrary', 'getLoredeckDefinition', 'getFreshLoredeckLibraryPack']
+        .some(name => Object.prototype.hasOwnProperty.call(incoming, name));
+    loredeckWorkbenchDeps = {
+        ...loredeckWorkbenchDeps,
+        ...(replacesPackLookup ? { getCanonicalWorkbenchPack: null } : {}),
+        ...incoming,
+    };
 }
 
 function dep(name, fallback = null) {
@@ -155,7 +165,8 @@ export function openLoredeckWorkbench(packId = '') {
     loredeckWorkbenchActiveTab = 'lorecards';
     loredeckWorkbenchRegistryQuery = '';
     loredeckWorkbenchSelectedEntryId = '';
-    loredeckWorkbenchPack = getWorkbenchPack(id);
+    const pack = getWorkbenchPack(id);
+    setCurrentWorkbenchPack(pack);
     const overlay = document.createElement('div');
     overlay.id = LOREDECK_WORKBENCH_ID;
     overlay.className = 'saga-lore-workbench-overlay saga-loredeck-workbench-overlay';
@@ -164,11 +175,14 @@ export function openLoredeckWorkbench(packId = '') {
     overlay.addEventListener('keydown', event => {
         if (event.key === 'Escape') closeLoredeckWorkbench();
     });
-    overlay.appendChild(createLoredeckWorkbenchShell(loredeckWorkbenchPack));
+    overlay.appendChild(createLoredeckWorkbenchShell(pack));
     document.body.appendChild(overlay);
     renderLoredeckWorkbench();
     scheduleWorkbenchFrame(() => { overlay.focus?.({ preventScroll: true }); });
-    void loadLoredeckWorkbenchRows(id, { force: loredeckWorkbenchCache.packId !== id || loredeckWorkbenchCache.status !== 'loaded' || !loredeckWorkbenchCache.rows.length });
+    void loadLoredeckWorkbenchRows(id, {
+        initialPack: pack,
+        force: loredeckWorkbenchCache.packId !== id || loredeckWorkbenchCache.status !== 'loaded' || !loredeckWorkbenchCache.rows.length,
+    });
 }
 
 export function closeLoredeckWorkbench() {
@@ -177,7 +191,7 @@ export function closeLoredeckWorkbench() {
     workbenchFrames.clear();
     disposeWorkbenchView();
     workbenchModel = null;
-    loredeckWorkbenchPack = null;
+    setCurrentWorkbenchPack(null);
     const overlay = document.getElementById(LOREDECK_WORKBENCH_ID);
     disposeRuntimeTooltips(overlay);
     overlay?.remove();
@@ -185,21 +199,27 @@ export function closeLoredeckWorkbench() {
 
 export function refreshLoredeckWorkbench() {
     if (!document.getElementById(LOREDECK_WORKBENCH_ID)) return;
-    loredeckWorkbenchPack = getWorkbenchPack();
+    setCurrentWorkbenchPack(getWorkbenchPack());
     renderLoredeckWorkbench();
 }
 
 function refreshWorkbenchPackAfterMutation(owner, packId) {
-    if (workbenchLifetime.isSessionCurrent(owner) && packId === loredeckWorkbenchPackId) loredeckWorkbenchPack = getWorkbenchPack(packId);
+    if (workbenchLifetime.isSessionCurrent(owner) && packId === loredeckWorkbenchPackId) setCurrentWorkbenchPack(getWorkbenchPack(packId));
+}
+
+function setCurrentWorkbenchPack(pack) {
+    loredeckWorkbenchPack = pack;
+    loredeckWorkbenchSourceLabel = pack?.packId ? getLoredeckTypeLabel(pack.packId) : '';
 }
 
 function getWorkbenchPack(packId = loredeckWorkbenchPackId) {
     // Hydration may clone the full payload. View-only updates reuse the active
     // authoritative reference; fresh reads belong at source/business boundaries.
-    const state = getState();
     const id = String(packId || '').trim();
     if (!id) return null;
-    const libraryPack = getLoredeckLibrary(state).find(pack => pack?.packId === id) || null;
+    const canonicalLookup = loredeckWorkbenchDeps.getCanonicalWorkbenchPack;
+    if (typeof canonicalLookup === 'function') return canonicalLookup(id);
+    const libraryPack = getLoredeckLibrary(getState()).find(pack => pack?.packId === id) || null;
     return getFreshLoredeckLibraryPack(id, libraryPack || getLoredeckDefinition(id)) || libraryPack || getLoredeckDefinition(id);
 }
 
@@ -311,8 +331,10 @@ function updateLoredeckWorkbenchHeader(overlay, pack) {
     overlay.querySelector('.saga-lore-workbench-subtitle').textContent = pack?.description || getLoredeckWorkbenchSubtitle(pack);
     const chips = overlay.querySelector('.saga-loredeck-workbench-header-chips');
     if (chips.dataset.workbenchState === getWorkbenchHeaderStateKey(pack)) {
-        const count = chips.children[1];
-        if (count && pack?.packId) count.textContent = `${getWorkbenchPresentationRows().length} Lorecards`;
+        if (!pack?.packId) return;
+        syncWorkbenchLoadChips(chips);
+        const count = chips.querySelector('[data-loredeck-workbench-count-chip]');
+        if (count) count.textContent = `${getWorkbenchPresentationRows().length} Lorecards`;
         refreshLoredeckWorkbenchSaveChip();
         return;
     }
@@ -326,11 +348,11 @@ function getWorkbenchPresentationRows() {
 }
 
 function getWorkbenchHeaderStateKey(pack) {
-    return JSON.stringify([pack?.packId, pack?.packId ? getLoredeckTypeLabel(pack.packId) : '', pack?.type, loredeckWorkbenchCache.status === 'loading', loredeckWorkbenchCache.error]);
+    return JSON.stringify([pack?.packId, loredeckWorkbenchSourceLabel, pack?.type]);
 }
 
 function updateLoredeckWorkbenchTabs(overlay, pack) {
-    const counts = [getWorkbenchPresentationRows().length, getLoredeckWorkbenchRegistryCount(pack), 0, getSourceFileCount(['loading', 'error'].includes(loredeckWorkbenchCache.status) ? null : loredeckWorkbenchCache.source)];
+    const counts = [getWorkbenchPresentationRows().length, getLoredeckWorkbenchRegistryCount(pack), 0, getWorkbenchPresentationFileCount()];
     const labels = ['Lorecards', 'Registries', 'Health', 'Files'];
     overlay.querySelectorAll('.saga-lore-workbench-mode-tab').forEach((button, index) => {
         button.textContent = counts[index] ? `${labels[index]} (${counts[index]})` : labels[index];
@@ -357,12 +379,11 @@ async function mountLorecardsView(view) {
     }
 }
 
-function mountWorkbenchLeaf(node, build, update = () => {}, initialSnapshot = null) {
+function mountWorkbenchLeaf(node, build, update = () => {}) {
     let disposed = false;
     try {
         const content = build(node);
         if (content !== node) node.append(...content.childNodes);
-        if (initialSnapshot) update(initialSnapshot);
     } catch (error) {
         disposeWorkbenchLeaf(node);
         throw error;
@@ -392,9 +413,9 @@ function createWorkbenchViewActions() {
         },
         inspectRow(id, event) {
             loredeckWorkbenchSelectedEntryId = id;
-            const row = workbenchModel.logicalRows.find(row => row.id === id);
-            if (workbenchModel.editable && !row?.draft && (event.shiftKey || event.ctrlKey || event.metaKey)) {
-                toggleLoredeckWorkbenchBulkSelection(id, workbenchModel.logicalRows, { range: event.shiftKey, additive: event.ctrlKey || event.metaKey });
+            if (workbenchModel.editable && (event.shiftKey || event.ctrlKey || event.metaKey)) {
+                const row = workbenchModel.logicalRows.find(row => row.id === id);
+                if (!row?.draft) toggleLoredeckWorkbenchBulkSelection(id, workbenchModel.logicalRows, { range: event.shiftKey, additive: event.ctrlKey || event.metaKey });
             }
             renderLoredeckWorkbench();
         },
@@ -414,7 +435,7 @@ function createWorkbenchViewActions() {
             renderLoredeckWorkbench();
         },
         mountControls(node, model) {
-            const handle = mountWorkbenchLeaf(node, () => createLoredeckWorkbenchControls(model.pack, model.logicalRows, node, model), next => {
+            return mountWorkbenchLeaf(node, () => createLoredeckWorkbenchControls(node, model), next => {
                 const search = node.querySelector('.saga-lore-workbench-search');
                 if (search.value !== next.query) search.value = next.query;
                 node.querySelector('.saga-lore-workbench-count').textContent = `${next.matchCount} of ${next.totalCount} Lorecards`;
@@ -423,12 +444,11 @@ function createWorkbenchViewActions() {
                 controls[1].updateOptions(next.categoryOptions);
                 controls[1].value = next.filters.category;
                 controls[2].value = next.filters.status;
-            }, model);
-            return handle;
+            });
         },
         mountBulkToolbar(node, model) {
             const pack = { ...model.pack };
-            const handle = mountWorkbenchLeaf(node, () => createLoredeckWorkbenchBulkToolbar(pack, model.logicalRows, node), next => {
+            return mountWorkbenchLeaf(node, () => createLoredeckWorkbenchBulkToolbar(pack, model.selectedIds.length, node), next => {
                 Object.assign(pack, next.pack);
                 const count = next.selectedIds.length;
                 node.querySelector('.saga-loredeck-workbench-bulk-summary').textContent = count ? `${count} selected` : 'No bulk selection';
@@ -437,19 +457,17 @@ function createWorkbenchViewActions() {
                     button.disabled = !count;
                     button.classList.toggle('saga-disabled-like', !count);
                 }
-            }, model);
-            return handle;
+            });
         },
         mountTableHeader(node, model) {
-            const handle = mountWorkbenchLeaf(node, () => createLoredeckWorkbenchTableHeader(model.logicalRows, model.editable, node), next => {
+            return mountWorkbenchLeaf(node, () => createLoredeckWorkbenchTableHeader(model.headerChecked, model.editable, node), next => {
                 const box = node.querySelector('[role="checkbox"]');
                 if (!box) return;
                 box.textContent = next.headerChecked ? 'x' : '';
                 box.setAttribute('aria-checked', String(next.headerChecked));
                 box.classList.toggle('saga-loredeck-workbench-select-box-checked', next.headerChecked);
                 addTooltip(box, next.headerChecked ? 'Clear visible Lorecard selection.' : 'Select all visible Lorecards.');
-            }, model);
-            return handle;
+            });
         },
         mountDetail(node, model) {
             const pack = { ...model.pack };
@@ -533,21 +551,43 @@ function createLoredeckWorkbenchHeader(pack = null) {
 
 function fillLoredeckWorkbenchHeaderChips(chips, pack) {
     chips.dataset.workbenchState = getWorkbenchHeaderStateKey(pack);
+    delete chips.dataset.workbenchLoadState;
     if (pack?.packId) {
         appendLoredeckStatusPills(chips, [
-            [getLoredeckTypeLabel(pack.packId), 'Loredeck source type.', { tone: 'source', kind: 'source' }],
-            [`${getWorkbenchPresentationRows().length} Lorecards`, 'Loaded Lorecards in this workbench cache.', { kind: 'count' }],
+            [loredeckWorkbenchSourceLabel, 'Loredeck source type.', { tone: 'source', kind: 'source' }],
+            {
+                text: `${getWorkbenchPresentationRows().length} Lorecards`,
+                tooltip: 'Loaded Lorecards in this workbench cache.',
+                kind: 'count',
+                dataset: { loredeckWorkbenchCountChip: 'true' },
+            },
         ]);
         const savePill = createStatusPill(getLoredeckWorkbenchSaveStateLabel(pack), getLoredeckWorkbenchSaveTooltip(pack), { tone: pack?.type === 'bundled' ? 'muted' : 'success', kind: 'status' });
         savePill.dataset.loredeckWorkbenchSaveChip = 'true';
         chips.appendChild(savePill);
-        appendLoredeckStatusPills(chips, [
-            { text: 'Loading...', tooltip: 'Lorecards are loading from this Loredeck source.', show: loredeckWorkbenchCache.status === 'loading', tone: 'info' },
-            { text: 'Load failed', tooltip: loredeckWorkbenchCache.error, show: !!loredeckWorkbenchCache.error, tone: 'danger', kind: 'severity' },
-        ]);
+        syncWorkbenchLoadChips(chips);
     } else {
         appendLoredeckStatusPills(chips, [['No deck', 'No Loredeck is selected.', { tone: 'muted' }]]);
     }
+}
+
+function syncWorkbenchLoadChips(chips) {
+    const loading = loredeckWorkbenchCache.status === 'loading';
+    const error = loredeckWorkbenchCache.error;
+    const state = JSON.stringify([loading, error]);
+    if (chips.dataset.workbenchLoadState === state) return;
+    chips.dataset.workbenchLoadState = state;
+    // The old chip replacement dismissed only tooltips owned by this group.
+    hideFloatingTooltipWithin(chips);
+    for (const chip of chips.querySelectorAll('[data-loredeck-workbench-load-chip]')) {
+        disposeRuntimeTooltips(chip);
+        chip.remove();
+    }
+    const dataset = { loredeckWorkbenchLoadChip: 'true' };
+    appendLoredeckStatusPills(chips, [
+        { text: 'Loading...', tooltip: 'Lorecards are loading from this Loredeck source.', show: loading, tone: 'info', dataset },
+        { text: 'Load failed', tooltip: error, show: !!error, tone: 'danger', kind: 'severity', dataset },
+    ]);
 }
 
 function getLoredeckWorkbenchSaveStateLabel(pack = {}) {
@@ -581,7 +621,7 @@ function createLoredeckWorkbenchTabs() {
         ['lorecards', 'Lorecards', getWorkbenchPresentationRows().length, 'Browse Lorecards inside this Loredeck.'],
         ['registries', 'Registries', getLoredeckWorkbenchRegistryCount(loredeckWorkbenchPack), 'Manage deck-owned tag and timeline registry metadata.'],
         ['health', 'Health', 0, 'Use Open Pack Health for the full Pack Health Center in this phase.'],
-        ['files', 'Files', getSourceFileCount(['loading', 'error'].includes(loredeckWorkbenchCache.status) ? null : loredeckWorkbenchCache.source), 'Package file inspection will be expanded after the browser foundation.'],
+        ['files', 'Files', getWorkbenchPresentationFileCount(), 'Package file inspection will be expanded after the browser foundation.'],
     ]) {
         const btn = document.createElement('button');
         btn.type = 'button';
@@ -1171,14 +1211,12 @@ function sortWorkbenchTimelineItems(list = [], kind = 'anchor') {
     });
 }
 
-function createLoredeckWorkbenchControls(pack = {}, rows = workbenchModel?.logicalRows || [], target = null, presentation = workbenchModel) {
-    const controls = target || document.createElement('div');
-    if (!target) controls.className = 'saga-lore-workbench-controls saga-loredeck-workbench-controls';
-
+function createLoredeckWorkbenchControls(controls, presentation) {
+    const { pack, filters, query } = presentation;
     controls.appendChild(createLoredeckSearchInput({
         className: 'saga-lore-workbench-search',
         placeholder: 'Search Lorecards...',
-        value: loredeckWorkbenchQuery,
+        value: query,
         tooltip: 'Search by Lorecard title, ID, summary, tags, category, Context, or source file.',
         onInput: (value, input) => {
             loredeckWorkbenchQuery = value;
@@ -1186,15 +1224,15 @@ function createLoredeckWorkbenchControls(pack = {}, rows = workbenchModel?.logic
         },
     }));
 
-    controls.appendChild(createWorkbenchSelect('Relevance', loredeckWorkbenchRelevanceFilter, getRelevanceFilterOptions(), value => {
+    controls.appendChild(createWorkbenchSelect('Relevance', filters.relevance, getRelevanceFilterOptions(), value => {
         loredeckWorkbenchRelevanceFilter = value || 'all';
         renderLoredeckWorkbench();
     }));
-    controls.appendChild(createWorkbenchSelect('Category', loredeckWorkbenchCategoryFilter, presentation.categoryOptions, value => {
+    controls.appendChild(createWorkbenchSelect('Category', filters.category, presentation.categoryOptions, value => {
         loredeckWorkbenchCategoryFilter = value || 'all';
         renderLoredeckWorkbench();
     }));
-    controls.appendChild(createWorkbenchSelect('Status', loredeckWorkbenchStatusFilter, getStatusFilterOptions(), value => {
+    controls.appendChild(createWorkbenchSelect('Status', filters.status, getStatusFilterOptions(), value => {
         loredeckWorkbenchStatusFilter = value || 'active';
         renderLoredeckWorkbench();
     }));
@@ -1218,9 +1256,8 @@ function createWorkbenchSelect(labelText, value, options, onChange) {
     });
 }
 
-function createLoredeckWorkbenchTableHeader(rows = [], selectable = false, target = null) {
-    const header = target || document.createElement('div');
-    if (selectable) header.appendChild(createLoredeckWorkbenchSelectHeaderCell(rows));
+function createLoredeckWorkbenchTableHeader(checked, selectable, header) {
+    if (selectable) header.appendChild(createLoredeckWorkbenchSelectHeaderCell(checked));
     header.appendChild(createWorkbenchCell('Lorecard'));
     header.appendChild(createWorkbenchCell('Type'));
     header.appendChild(createWorkbenchCell('Relevance'));
@@ -1244,12 +1281,9 @@ function createWorkbenchCell(text, subText = '') {
     return cell;
 }
 
-function createLoredeckWorkbenchSelectHeaderCell(rows = []) {
+function createLoredeckWorkbenchSelectHeaderCell(checked) {
     const cell = document.createElement('span');
     cell.className = 'saga-loredeck-workbench-select-cell saga-loredeck-workbench-select-header-cell';
-    const visibleIds = getLoredeckWorkbenchSelectableRowIds(rows);
-    const selectedVisibleCount = visibleIds.filter(id => loredeckWorkbenchBulkSelection.has(id)).length;
-    const checked = !!visibleIds.length && selectedVisibleCount === visibleIds.length;
     const box = document.createElement('span');
     box.className = `saga-loredeck-workbench-select-box${checked ? ' saga-loredeck-workbench-select-box-checked' : ''}`;
     box.textContent = checked ? 'x' : '';
@@ -1265,9 +1299,7 @@ function createLoredeckWorkbenchSelectHeaderCell(rows = []) {
     return cell;
 }
 
-function createLoredeckWorkbenchBulkToolbar(pack = {}, rows = [], target = null) {
-    const toolbar = target || document.createElement('div');
-    if (!target) toolbar.className = 'saga-loredeck-workbench-bulk-toolbar';
+function createLoredeckWorkbenchBulkToolbar(pack, selectedCount, toolbar) {
     const owner = workbenchLifetime.captureSession();
     const viewOwner = workbenchLifetime.captureView(workbenchView?.host);
     const createActionButton = (label, tip, action, className) => createButton(label, tip, async button => {
@@ -1278,9 +1310,6 @@ function createLoredeckWorkbenchBulkToolbar(pack = {}, rows = [], target = null)
             if (workbenchLifetime.isSessionCurrent(owner) && workbenchLifetime.isViewCurrent(viewOwner)) scheduleWorkbenchFrame(renderLoredeckWorkbench);
         }
     }, className);
-    const selectedIds = getLoredeckWorkbenchSelectedIds();
-    const selectedCount = selectedIds.length;
-
     toolbar.appendChild(createLoredeckSelectionSummary({
         className: 'saga-loredeck-workbench-bulk-summary',
         selectedCount,
@@ -1288,10 +1317,10 @@ function createLoredeckWorkbenchBulkToolbar(pack = {}, rows = [], target = null)
         tooltip: 'Bulk actions apply directly after confirmation.',
     }));
 
-    toolbar.appendChild(createActionButton('Select Visible', 'Select every visible Lorecard matching the current filters.', () => {
+    toolbar.appendChild(createButton('Select Visible', 'Select every visible Lorecard matching the current filters.', () => {
         selectLoredeckWorkbenchVisibleRows(workbenchModel.logicalRows);
     }));
-    toolbar.appendChild(createActionButton('Clear', 'Clear the current bulk selection.', () => {
+    toolbar.appendChild(createButton('Clear', 'Clear the current bulk selection.', () => {
         clearLoredeckWorkbenchBulkSelection();
     }));
 
@@ -1441,6 +1470,7 @@ function getLoredeckWorkbenchRowMap() {
 }
 
 function reconcileLoredeckWorkbenchBulkSelection(rows = getFilteredLoredeckWorkbenchRows()) {
+    if (!loredeckWorkbenchBulkSelection.size && !loredeckWorkbenchLastSelectionId) return;
     const valid = new Set(getLoredeckWorkbenchSelectableRowIds(rows));
     loredeckWorkbenchBulkSelection = new Set([...loredeckWorkbenchBulkSelection].filter(id => valid.has(id)));
     if (loredeckWorkbenchLastSelectionId && !valid.has(loredeckWorkbenchLastSelectionId)) loredeckWorkbenchLastSelectionId = '';
@@ -1466,10 +1496,10 @@ function clearLoredeckWorkbenchBulkSelection(ids = null) {
 function toggleLoredeckWorkbenchBulkSelection(id = '', rows = getFilteredLoredeckWorkbenchRows(), options = {}) {
     const entryId = String(id || '').trim();
     if (!entryId) return;
-    const visibleIds = getLoredeckWorkbenchSelectableRowIds(rows);
-    if (options.range && loredeckWorkbenchLastSelectionId && visibleIds.includes(loredeckWorkbenchLastSelectionId) && visibleIds.includes(entryId)) {
-        const from = visibleIds.indexOf(loredeckWorkbenchLastSelectionId);
-        const to = visibleIds.indexOf(entryId);
+    const visibleIds = options.range && loredeckWorkbenchLastSelectionId ? getLoredeckWorkbenchSelectableRowIds(rows) : null;
+    const from = visibleIds?.indexOf(loredeckWorkbenchLastSelectionId) ?? -1;
+    const to = visibleIds?.indexOf(entryId) ?? -1;
+    if (from !== -1 && to !== -1) {
         const [start, end] = from <= to ? [from, to] : [to, from];
         for (const rangeId of visibleIds.slice(start, end + 1)) loredeckWorkbenchBulkSelection.add(rangeId);
     } else if (loredeckWorkbenchBulkSelection.has(entryId)) {
@@ -2458,18 +2488,20 @@ async function loadLoredeckWorkbenchRows(packId = loredeckWorkbenchPackId, optio
     if (workbenchLifetime.isSourceCurrent(token)) {
         hideFloatingTooltip();
         const previous = loredeckWorkbenchCache.packId === id ? loredeckWorkbenchCache : null;
-        loredeckWorkbenchCache = { packId: id, status: 'loading', error: '', loadedAt: 0, rows: previous?.rows || [], source: previous?.source || null };
+        loredeckWorkbenchCache = { packId: id, status: 'loading', error: '', loadedAt: 0, rows: previous?.rows || [], fileCount: previous?.fileCount || 0 };
         renderLoredeckWorkbench();
     }
     try {
-        const pack = getWorkbenchPack(id);
-        const registry = getLoredeckLibraryRegistry(getState());
+        const pack = options.initialPack ?? getWorkbenchPack(id);
         const sourcePack = pack && pack.type !== 'bundled' ? { ...pack, disabledEntryIds: [] } : pack;
-        const source = await loadLoredeckSourceById(id, { registry, registryRecord: sourcePack });
+        const source = await loadLoredeckSourceById(id, sourcePack
+            ? { registryRecord: sourcePack }
+            : { registry: getLoredeckLibraryRegistry(getState()) });
         const rows = buildLoredeckWorkbenchRows(source, pack);
         if (workbenchLifetime.isSourceCurrent(token)) {
-            loredeckWorkbenchPack = getWorkbenchPack(id) || pack;
-            loredeckWorkbenchCache = { packId: id, status: 'loaded', error: '', loadedAt: Date.now(), rows, source };
+            setCurrentWorkbenchPack(getWorkbenchPack(id) || pack);
+            const fileCount = Array.isArray(source?.entryFiles) ? source.entryFiles.length : 0;
+            loredeckWorkbenchCache = { packId: id, status: 'loaded', error: '', loadedAt: Date.now(), rows, fileCount };
             renderLoredeckWorkbench();
             if (!rows.length) toast(`${pack?.title || id} has no loadable Lorecards.`, 'warning');
         }
@@ -2561,18 +2593,25 @@ function ensureLoredeckWorkbenchSelection(rows = getFilteredLoredeckWorkbenchRow
 
 function getFilteredLoredeckWorkbenchRows() {
     const query = String(loredeckWorkbenchQuery || '').trim().toLowerCase();
-    const filtered = (loredeckWorkbenchCache.rows || []).filter(row => {
-        const entry = row.entry || {};
-        if (loredeckWorkbenchStatusFilter === 'active' && row.disabled) return false;
-        if (loredeckWorkbenchStatusFilter === 'disabled' && !row.disabled) return false;
-        if (loredeckWorkbenchRelevanceFilter !== 'all' && getEntryRelevance(entry).toLowerCase() !== loredeckWorkbenchRelevanceFilter) return false;
-        if (loredeckWorkbenchCategoryFilter !== 'all' && getEntryCategory(entry).toLowerCase() !== loredeckWorkbenchCategoryFilter) return false;
-        if (!query) return true;
-        return getLoredeckWorkbenchSearchText(row).includes(query);
-    });
+    const status = loredeckWorkbenchStatusFilter;
+    const relevance = loredeckWorkbenchRelevanceFilter;
+    const category = loredeckWorkbenchCategoryFilter;
+    let filtered = loredeckWorkbenchCache.filtered;
+    if (!filtered || filtered.query !== query || filtered.status !== status
+        || filtered.relevance !== relevance || filtered.category !== category) {
+        // Source loads replace the cache. Draft rows are projected separately.
+        const rows = loredeckWorkbenchCache.rows.filter(row => {
+            const entry = row.entry || {};
+            if (status === 'active' && row.disabled) return false;
+            if (status === 'disabled' && !row.disabled) return false;
+            if (relevance !== 'all' && getEntryRelevance(entry).toLowerCase() !== relevance) return false;
+            if (category !== 'all' && getEntryCategory(entry).toLowerCase() !== category) return false;
+            return !query || getLoredeckWorkbenchSearchText(row).includes(query);
+        });
+        filtered = loredeckWorkbenchCache.filtered = { query, status, relevance, category, rows };
+    }
     const draft = getLoredeckWorkbenchDraftRow();
-    if (draft) filtered.unshift(draft);
-    return filtered;
+    return draft ? [draft, ...filtered.rows] : filtered.rows;
 }
 
 function getLoredeckWorkbenchSearchText(row = {}) {
@@ -2832,6 +2871,6 @@ function getEntryContextSummary(entry = {}) {
     return values.join(' | ');
 }
 
-function getSourceFileCount(source = {}) {
-    return Array.isArray(source?.entryFiles) ? source.entryFiles.length : 0;
+function getWorkbenchPresentationFileCount() {
+    return ['loading', 'error'].includes(loredeckWorkbenchCache.status) ? 0 : loredeckWorkbenchCache.fileCount;
 }

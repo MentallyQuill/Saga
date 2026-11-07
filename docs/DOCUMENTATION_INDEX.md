@@ -4,9 +4,10 @@ Saga documentation is being organized into release-facing topic folders. Older i
 
 ## Release Notes
 
+- [Saga 0.5.0-beta.1 - Svelte](release/0.5.0-beta.1.md) covers the lighter Loredeck Library, the updated Workbench, and changes to how Deck Maker loads.
 - [Saga Lorecard Context Storage Patch - November 5, 2026](release/2026-11-05-lorecard-context-storage.md): fixes fabricated Context gates, adds conservative recovery for manual and Story Scan cards, and corrects Injection preview explanations.
 - [Saga Reliability Patches - October 6, 2026](release/2026-10-06-reliability-patches.md): post-alpha reliability and data-preservation fixes; the `0.4.0-alpha.4` release identifier remains unchanged.
-- [Saga 0.4.0-alpha.4 - Scribe](release/0.4.0-alpha.4.md): current alpha with the external Loredeck Builder toolkit, multi-deck authoring support, evidence-grounded workflow documentation, and release-gate coverage for the authoring path.
+- [Saga 0.4.0-alpha.4 - Scribe](release/0.4.0-alpha.4.md) introduced the external Loredeck Builder toolkit and support for authoring related decks together.
 - [Saga 0.3.0-alpha.3 - Voyages](release/0.3.0-alpha.3.md): previous alpha with bundled One Piece and Star Trek Lorepack expansion, Story Maker reliability hardening, Deck Maker generation cleanup, and expanded alpha-gate coverage.
 - [Saga 0.2.0-alpha.2 - The Big Mobile Update](release/0.2.0-alpha.2.md): previous alpha with phone-width mobile UI, Story Maker, Deck Maker polish, mobile docs, and release-gate notes.
 - [Saga 0.1.0-alpha.1 - Fox One](release/0.1.0-alpha.1.md): first controlled alpha release notes.

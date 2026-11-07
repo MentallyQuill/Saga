@@ -264,10 +264,17 @@ test('detail binds eager/async before an immediate original source and needs no 
 test('list binds lazy/async before source, waits for nonzero layout, and upgrades on resize and DPR', async () => {
   const platform = installPlatform();
   try {
-    const { bindLoredeckCoverImage } = await loadCoverModule();
+    const { bindLoredeckCoverImage, getLoredeckAssetRef } = await loadCoverModule();
     const visual = platform.element();
     const img = new FakeImage(visual);
-    const dispose = bindLoredeckCoverImage(visual, img, pack(), { usage: 'list' });
+    const deck = pack();
+    const assets = deck.assets;
+    let assetReads = 0;
+    Object.defineProperty(deck, 'assets', { get() { assetReads++; return assets; } });
+    const resolvedCover = getLoredeckAssetRef(deck);
+    const bindingReads = assetReads;
+    const dispose = bindLoredeckCoverImage(visual, img, deck, { usage: 'list', resolvedCover });
+    assert.equal(assetReads, bindingReads, 'the visual can pass its resolved cover into the binding');
     assert.equal(img.src, '', 'closed or unsized covers must not request an original');
     await platform.resize(visual, 0, 0);
     assert.equal(img.src, '');
@@ -278,6 +285,12 @@ test('list binds lazy/async before source, waits for nonzero layout, and upgrade
     assert.equal(img.src, derivative('portrait', 256));
     await platform.dpr(3);
     assert.equal(img.src, original());
+    assert.equal(assetReads, bindingReads, 'size updates reuse the bound cover metadata');
+    assert.equal(platform.observedCount(), 0, 'the original is final and no longer needs size observation');
+    const originalWrites = img.history.length;
+    await platform.resize(visual, 40, 40);
+    await platform.dpr(1);
+    assert.equal(img.history.length, originalWrites, 'the original stays selected while the cover is bound');
     dispose(); dispose();
     const before = img.history.length;
     await platform.resize(visual, 40, 40);
@@ -300,6 +313,7 @@ test('derivative errors retry original then call monogram/action restoration onc
     assert.equal(img.src, derivative());
     img.error();
     assert.equal(img.src, original());
+    assert.equal(platform.observedCount(), 0, 'the original fallback no longer needs size observation');
     assert.equal(img.getAttribute('srcset'), null);
     assert.equal(fallbackCount, 0, 'a missing derivative must not show a monogram');
     img.error(); img.error();

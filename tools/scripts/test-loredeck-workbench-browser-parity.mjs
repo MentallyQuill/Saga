@@ -333,6 +333,7 @@ test('real forced reload shows original loading copy, retains hidden editor buff
             area.scrollTop = 120;
             window.retainedArea = area;
             window.retainedTable = document.querySelector('.saga-lore-workbench-table');
+            window.retainedHeaderChips = [...document.querySelector('.saga-loredeck-workbench-header-chips').children];
             const scroll = area.scrollTop;
             document.querySelector('.saga-loredeck-workbench-entry-row').dispatchEvent(new Event('mouseenter'));
             const shown = document.querySelector('.saga-floating-tooltip')?.style.display === 'block';
@@ -353,15 +354,27 @@ test('real forced reload shows original loading copy, retains hidden editor buff
         assert.equal(await h.page.locator('.saga-lore-workbench-view > .saga-lore-empty').textContent(), 'Loading Lorecards...');
         assert.equal(await h.page.locator('.saga-lore-workbench-main').isVisible(), false);
         assert.equal(await h.page.locator('.saga-floating-tooltip').isVisible(), false);
+        const loadingChips = await h.page.evaluate(() => {
+            const chips = [...document.querySelector('.saga-loredeck-workbench-header-chips').children];
+            chips[0].dispatchEvent(new Event('mouseenter'));
+            return {
+                retained: retainedHeaderChips.every((chip, index) => chips[index] === chip),
+                status: chips.at(-1).textContent,
+                tooltip: document.querySelector('.saga-floating-tooltip')?.textContent,
+            };
+        });
+        assert.deepEqual(loadingChips, { retained: true, status: 'Loading...', tooltip: 'Loredeck source type.' });
         await source.release();
         await h.page.waitForSelector('.saga-lore-workbench-main', { state: 'visible' });
+        assert.equal(await h.page.locator('.saga-floating-tooltip').isVisible(), false);
         const retained = await h.page.evaluate(() => ({
             area: document.querySelector('[name="fact"]') === retainedArea,
             table: document.querySelector('.saga-lore-workbench-table') === retainedTable,
             buffer: retainedArea.value.startsWith('Buffered line 0'), scroll: retainedArea.scrollTop,
+            chips: retainedHeaderChips.every((chip, index) => document.querySelector('.saga-loredeck-workbench-header-chips').children[index] === chip),
             writes: fixture.persistenceCalls.length,
         }));
-        assert.deepEqual(retained, { area: true, table: true, buffer: true, scroll: before.scroll, writes: 0 });
+        assert.deepEqual(retained, { area: true, table: true, buffer: true, scroll: before.scroll, chips: true, writes: 0 });
         assert.deepEqual(h.errors, []);
     } catch (error) {
         if (h.captureFailure) await h.captureFailure(error);
@@ -470,26 +483,38 @@ test('ordinary selection and filtering reuse the active pack without hydrating o
     try {
         const afterInteractions = await h.page.evaluate(() => {
             window.hydrationClones = 0;
+            window.typeLabelReads = 0;
+            window.sourceRegistryReads = 0;
+            window.sourceTypeLabel = 'Custom';
             panel.configureLoredeckWorkbenchPanel({
                 getFreshLoredeckLibraryPack(id, fallback) { hydrationClones++; return structuredClone(fixture.registry.packs[id] || fallback); },
+                getLoredeckTypeLabel() { typeLabelReads++; return sourceTypeLabel; },
+                getLoredeckLibraryRegistry() { sourceRegistryReads++; return fixture.registry; },
             });
             panel.refreshLoredeckWorkbench();
             const initial = hydrationClones;
+            const initialLabelReads = typeLabelReads;
             const rows = [...document.querySelectorAll('.saga-loredeck-workbench-entry-row')];
             rows[1].click(); rows[2].click();
             const search = document.querySelector('.saga-lore-workbench-search'); search.value = 'fixture'; search.dispatchEvent(new Event('input'));
-            return { initial, after: hydrationClones };
+            return { initial, after: hydrationClones, initialLabelReads, afterLabelReads: typeLabelReads };
         });
-        assert.deepEqual(afterInteractions, { initial: 1, after: 1 });
+        assert.deepEqual(afterInteractions, { initial: 1, after: 1, initialLabelReads: 1, afterLabelReads: 1 });
         const afterExplicit = await h.page.evaluate(() => {
             fixture.registry.packs['performance-custom-a'].title = 'Fresh explicit metadata';
             fixture.registry.packs['performance-custom-a'].entryOverrides['fixture.entry.0003'].content.fact = 'Fresh canonical fact';
+            sourceTypeLabel = 'Fresh source label';
             panel.refreshLoredeckWorkbench();
-            return { calls: hydrationClones, header: document.querySelector('.saga-lore-workbench-title').textContent };
+            return {
+                calls: hydrationClones,
+                header: document.querySelector('.saga-lore-workbench-title').textContent,
+                sourceLabelUpdated: document.querySelector('.saga-loredeck-workbench-header-chips').textContent.includes(sourceTypeLabel),
+            };
         });
-        assert.deepEqual(afterExplicit, { calls: 2, header: 'Fresh explicit metadata' });
+        assert.deepEqual(afterExplicit, { calls: 2, header: 'Fresh explicit metadata', sourceLabelUpdated: true });
         await clickText(h.page, 'Reload Lorecards');
         await h.page.waitForFunction(() => document.querySelector('[name="fact"]')?.value === 'Fresh canonical fact');
+        assert.equal(await h.page.evaluate(() => sourceRegistryReads), 0, 'source loading already has the pack record');
         const sourceCalls = await h.page.evaluate(() => hydrationClones);
         assert.ok(sourceCalls > afterExplicit.calls);
         await h.page.evaluate(() => {
@@ -501,6 +526,14 @@ test('ordinary selection and filtering reuse the active pack without hydrating o
         assert.ok(saved.calls > sourceCalls); assert.equal(saved.writes, 1);
         await h.page.evaluate(() => document.querySelector('.saga-loredeck-workbench-entry-row').click());
         assert.equal(await h.page.evaluate(() => hydrationClones), saved.calls);
+        const firstOpenCalls = await h.page.evaluate(() => {
+            const before = hydrationClones;
+            fixture.openWorkbench('performance-custom-b');
+            return hydrationClones - before;
+        });
+        assert.equal(firstOpenCalls, 1, 'the source request starts with the same pack snapshot as the new shell');
+        await h.page.waitForSelector('.saga-loredeck-workbench-editor-form');
+        assert.equal(await h.page.evaluate(() => hydrationClones), saved.calls + 2, 'source publish still refreshes the pack after loading');
         assert.deepEqual(h.errors, []);
     } catch (error) {
         if (h.captureFailure) await h.captureFailure(error);

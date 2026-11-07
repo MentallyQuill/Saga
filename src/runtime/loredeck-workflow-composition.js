@@ -133,6 +133,7 @@ export function configureLoredeckWorkflowComposition(deps = {}) {
         getLoredeckLibraryRegistry: deps.getLoredeckLibraryRegistry,
         getLoredeckDefinition: deps.getLoredeckDefinition,
         getFreshLoredeckLibraryPack: deps.getFreshLoredeckLibraryPack,
+        getCanonicalWorkbenchPack: deps.getFreshLoredeckLibraryPack,
         getLoredeckTypeLabel: deps.getLoredeckTypeLabel,
         openDuplicateLoredeckDialog: deps.openDuplicateLoredeckDialog,
         openLoredeckHealthCenter: deps.openLoredeckHealthCenter,

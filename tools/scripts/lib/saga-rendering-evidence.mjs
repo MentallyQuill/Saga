@@ -13,6 +13,20 @@ const VISUAL_PROFILES = [
     { id: 'tablet', viewport: { width: 768, height: 1024 }, deviceScaleFactor: 1 },
     { id: 'phone', viewport: { width: 430, height: 820 }, deviceScaleFactor: 3 },
 ];
+const VISUAL_THEMES = ['default', 'custom'];
+// Keep the reviewed inventory local so archived collector code has no browser
+// fixture dependency. The acceptance regression checks it against the runner.
+const VISUAL_STATES = [
+    'custom', 'generated', 'bundled', 'empty', 'filtered-empty', 'loading', 'error', 'selection', 'bulk', 'draft', 'editor', 'registries',
+    'creator-closed', 'creator-scope-brief', 'creator-story-outline', 'creator-title-sets', 'creator-context-plan', 'creator-review-queue', 'creator-lorecards', 'creator-deck-health', 'creator-coverage-plan',
+    'workbench-100', 'workbench-500', 'workbench-600', 'library-77', 'library-1000', 'runtime-icons',
+];
+export function expectedVisualPairs() {
+    return VISUAL_PROFILES.flatMap(profile => VISUAL_THEMES.flatMap(theme =>
+        VISUAL_STATES.map(state => ({
+            id: `${profile.id}-${theme}-${state}`, profile: { ...profile, viewport: { ...profile.viewport } }, theme, state,
+        }))));
+}
 const hashPattern = /^[a-f0-9]{64}$/;
 const equal = (a, b, reason) => assert.ok(isDeepStrictEqual(a, b), reason);
 export function artifactBytes(bundle, reference) {
@@ -107,13 +121,13 @@ function validateVisibleCover(bundle, pair, image) {
     return true;
 }
 function validateVisualPairs(bundle, visual) {
-    assert.ok(Array.isArray(visual.pairs) && visual.pairs.length >= 162, 'Missing complete paired visual inventory');
+    const expected = new Set(expectedVisualPairs().map(pair => pair.id));
+    assert.ok(Array.isArray(visual.pairs) && visual.pairs.length >= expected.size, 'Missing complete paired visual inventory');
     assert.ok(new Set(visual.pairs.map(pair => pair.id)).size === visual.pairs.length, 'Duplicate visual pair');
-    const expectedLibrary = new Set(VISUAL_PROFILES.flatMap(({ id }) => ['default', 'custom'].flatMap(theme => ['library-77', 'library-1000'].map(state => `${id}-${theme}-${state}`))));
     for (const pair of visual.pairs) {
         const profile = VISUAL_PROFILES.find(item => item.id === pair.profile?.id);
         assert.ok(profile && isDeepStrictEqual(pair.profile, profile), 'Visual viewport/DPR mismatch');
-        assert.ok(typeof pair.state === 'string' && pair.state && ['default', 'custom'].includes(pair.theme), 'Missing visual state/theme');
+        assert.ok(typeof pair.state === 'string' && pair.state && VISUAL_THEMES.includes(pair.theme), 'Missing visual state/theme');
         assert.equal(pair.id, `${profile.id}-${pair.theme}-${pair.state}`, 'Visual pair ID does not match state/profile/theme');
         for (const ref of [pair.baseline, pair.candidate]) inspectPng(bundle, ref);
         assert.equal(pair.comparison?.geometryEqual, true, 'Visual geometry mismatch');
@@ -122,12 +136,12 @@ function validateVisualPairs(bundle, visual) {
         if (pair.comparison.changedPixels || pair.diff) inspectPng(bundle, pair.diff);
         assert.ok(Array.isArray(pair.images), 'Missing image quality/crop/DPR observations');
         const visibleCovers = pair.images.filter(image => validateVisibleCover(bundle, pair, image));
-        if (expectedLibrary.has(pair.id)) {
+        if (pair.state === 'library-77' || pair.state === 'library-1000') {
             assert.ok(visibleCovers.length, `Missing observed Library cover: ${pair.id}`);
-            expectedLibrary.delete(pair.id);
         }
+        expected.delete(pair.id);
     }
-    assert.equal(expectedLibrary.size, 0, `Missing Library cover pairs: ${[...expectedLibrary].join(', ')}`);
+    assert.equal(expected.size, 0, `Missing visual pairs: ${[...expected].join(', ')}`);
 }
 export function validateBundleEvidence(bundle, role = 'candidate') {
     const e = bundle.evidence;

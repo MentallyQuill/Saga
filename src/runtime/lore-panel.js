@@ -10535,8 +10535,8 @@ function openLoredeckBulkContextDialog(pack, rows = []) {
 
 function getFreshLoredeckLibraryPack(packId, fallback = null) {
     const id = String(packId || fallback?.packId || fallback?.id || '').trim();
-    const externalFresh = id ? (getExternalLoredeckLibraryRegistry()?.packs?.[id] || null) : null;
-    const fresh = getLoredeckDefinition(id) || externalFresh;
+    const fresh = getLoredeckDefinition(id)
+        || (id ? getExternalLoredeckLibraryRegistry()?.packs?.[id] : null);
     const hydratedFresh = fresh ? hydrateCachedExternalLorepackPayloadRecord(fresh) : null;
     if (hydratedFresh && !isCompactExternalLorepackPayloadRecord(hydratedFresh)) return hydratedFresh;
     const hydratedFallback = fallback ? hydrateCachedExternalLorepackPayloadRecord(fallback) : null;
