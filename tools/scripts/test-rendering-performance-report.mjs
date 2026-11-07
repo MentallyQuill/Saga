@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { validateCapture, assertComparableCaptures, assertCachePolicy } from './lib/saga-performance-report.mjs';
+import { SAGA_IMAGE_READINESS_POLICY } from './lib/saga-performance-image-readiness.mjs';
 const metadata = { fixture: { type: 'custom', deckCount: 1, entryCount: 500, coverPool: ['assets/cover.png'], revision: 'fixture-v1' }, browser: { name: 'chromium', version: '123' }, viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1, cpuRate: 1, cacheMode: 'warm', cacheControl: 'public, max-age=3600', theme: 'default' };
 const capture = () => ({ metadata: structuredClone(metadata), samples: [{ readinessMs: 5, interactionMs: 2, selectionCpuMs: 1, transferBytes: 12, imageBytes: 8, resourceBytes: 12, mutationsAdded: 1, mutationsRemoved: 1, longTaskMs: 0, beforeId: 'a', afterId: 'b' }] });
 assert.doesNotThrow(() => validateCapture(capture()));
@@ -217,7 +218,7 @@ if (captureDirectory) {
     }
     resolvedCaptures.push({ ...record, metadata: m });
     assert.ok(m.browser.name && m.browser.version);
-    assert.equal(m.sourceHash, index.sourceHash); assert.equal(m.protocolHash, index.protocolHash); assert.equal(m.fixture.revision, index.fixtureHash);
+    assertArtifactProvenance(index, m);
     const png = await readFile(join(captureDirectory, record.screenshot.file));
     assert.equal(createHash('sha256').update(png).digest('hex'), record.screenshot.sha256);
   }
@@ -327,3 +328,33 @@ if (covers('cpu-args')) {
   }
   console.log('Duplicate/invalid CPU rates reject before filesystem or browser allocation.');
 }
+const gatedCapture = () => {
+  const value = capture(); value.metadata.imageReadinessPolicy = structuredClone(SAGA_IMAGE_READINESS_POLICY); value.metadata.fixture.library = true;
+  Object.assign(value.samples[0], { kind: 'open', interactionMs: null, imageReadiness: { ready: true, supported: true, policy: SAGA_IMAGE_READINESS_POLICY.id, unknownRoots: 0, unknownImages: 0, eligibleCount: 1, decodedCount: 1, visibleCoverCount: 1, visibleDeckCoverCount: 1, initialReadyEpoch: 1, sealedEpoch: 2, images: [{ id: 1, source: 'https://fixture/cover.png', decoded: true, cover: true, deckCover: true }] } });
+  return value;
+};
+assert.doesNotThrow(() => validateCapture(gatedCapture()));
+for (const mutate of [
+  c => { c.metadata.imageReadinessPolicy.rootMargin = '1000px'; },
+  c => { c.samples[0].imageReadiness = null; },
+  c => { c.samples[0].imageReadiness.supported = false; },
+  c => { c.samples[0].imageReadiness.unknownImages = 1; },
+  c => { c.samples[0].imageReadiness.decodedCount = 0; },
+  c => { c.samples[0].imageReadiness.visibleDeckCoverCount = 0; },
+  c => { c.samples[0].imageReadiness.sealedEpoch = 1; },
+]) { const bad = gatedCapture(); mutate(bad); assert.throws(() => validateCapture(bad), /image|Image|cover|Cover|epoch/i); }
+assert.throws(() => assertComparableCaptures(capture(), gatedCapture()), /metadata mismatch/);
+console.log('Image policy metadata and stable decoded snapshots validated; old/new methods cannot be compared.');
+
+const oldImagePolicy = gatedCapture(); delete oldImagePolicy.metadata.imageReadinessPolicy; assert.throws(() => assertComparableCaptures(gatedCapture(), oldImagePolicy), /metadata mismatch: imageReadinessPolicy/);
+
+function assertArtifactProvenance(index, metadata) {
+  if (index.imageReadinessPolicy !== undefined) assert.deepEqual(index.imageReadinessPolicy, SAGA_IMAGE_READINESS_POLICY, 'Unknown artifact image policy');
+  assert.deepEqual(metadata.imageReadinessPolicy, index.imageReadinessPolicy, 'Image policy provenance mismatch');
+  assert.equal(metadata.sourceHash, index.sourceHash); assert.equal(metadata.protocolHash, index.protocolHash); assert.equal(metadata.fixture.revision, index.fixtureHash);
+}
+const policyIndex = { sourceHash: 'source', protocolHash: 'protocol', fixtureHash: 'fixture', imageReadinessPolicy: SAGA_IMAGE_READINESS_POLICY };
+const policyRecord = { sourceHash: 'source', protocolHash: 'protocol', fixture: { revision: 'fixture' } };
+assert.throws(() => assertArtifactProvenance(policyIndex, policyRecord), /image policy provenance/i);
+
+assert.doesNotThrow(() => assertArtifactProvenance({ ...policyIndex, imageReadinessPolicy: undefined }, policyRecord)); assert.doesNotThrow(() => assertArtifactProvenance(policyIndex, { ...policyRecord, imageReadinessPolicy: SAGA_IMAGE_READINESS_POLICY }));

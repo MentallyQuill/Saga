@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { startSagaPerformanceHarness } from './lib/saga-performance-harness.mjs';
 import { validateCapture, summarizeSamples } from './lib/saga-performance-report.mjs';
 import { resourceBytesForWindow } from './lib/saga-performance-request-journal.mjs';
+import { installSagaPerformanceImageReadiness, SAGA_IMAGE_READINESS_POLICY } from './lib/saga-performance-image-readiness.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const args = process.argv.slice(2);
@@ -27,7 +28,7 @@ assert.ok(Number.isInteger(warmRuns) && warmRuns > 0 && Number.isInteger(coldRun
 await fs.mkdir(output, { recursive: true });
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const fixtureHash = hash(await fs.readFile(path.join(fixtureRoot, 'performance-fixtures.mjs')));
-const protocolFiles = ['tools/scripts/capture-rendering-performance.mjs', 'tools/scripts/lib/saga-performance-harness.mjs', 'tools/scripts/lib/saga-performance-report.mjs', 'tools/scripts/lib/saga-performance-request-journal.mjs', 'tools/scripts/serve-visual-smoke.mjs'];
+const protocolFiles = ['tools/scripts/capture-rendering-performance.mjs', 'tools/scripts/lib/saga-performance-harness.mjs', 'tools/scripts/lib/saga-performance-report.mjs', 'tools/scripts/lib/saga-performance-request-journal.mjs', 'tools/scripts/serve-visual-smoke.mjs', 'tools/scripts/lib/saga-performance-image-readiness.mjs'];
 const protocolHash = hash(Buffer.concat(await Promise.all(protocolFiles.map(async file => Buffer.concat([Buffer.from(file), await fs.readFile(path.join(root, file))])))));
 const sourceFiles = (await Promise.all(['src', 'styles'].map(async dir => (await fs.readdir(path.join(sourceRoot, dir), { recursive: true, withFileTypes: true })).filter(e => e.isFile()).map(e => path.relative(sourceRoot, path.join(e.parentPath, e.name)).replaceAll('\\', '/'))))).flat().sort();
 sourceFiles.push('manifest.json');
@@ -52,7 +53,7 @@ const profiles = [
     { id: 'phone', viewport: { width: 430, height: 820 }, deviceScaleFactor: 3 },
 ].filter(p => !arg('profiles', '') || arg('profiles', '').split(',').includes(p.id));
 
-const index = { schemaVersion: 1, createdAt: new Date().toISOString(), sourceRoot, fixtureRoot, sourceRevision, sourceHash, protocolHash, fixtureHash, coverHashes, absentCoverPackIds, environment: { platform: process.platform, release: os.release(), arch: process.arch, cpu: os.cpus()[0]?.model, node: process.version }, requestedRuns: { warm: warmRuns, cold: coldRuns }, completeRunCounts: warmRuns >= 30 && coldRuns >= 20, captures: [], limitations: ['The actual 77-deck index declares 70 cover assets; seven DS9 decks retain their existing monogram fallback.', 'At the phone viewport the baseline workbench table is occluded by toolbar/detail layout; real keyboard activation measures row selections, and the pointer-access failure remains recorded.', 'Desktop viewport emulation is not real Android or iOS hardware coverage.', 'CDP task metrics available for Chromium only.', 'Clone/model invocation counts and retained component/listener counts require later structural instrumentation and parity evidence.'] };
+const index = { schemaVersion: 1, createdAt: new Date().toISOString(), sourceRoot, fixtureRoot, sourceRevision, sourceHash, protocolHash, imageReadinessPolicy: SAGA_IMAGE_READINESS_POLICY, fixtureHash, coverHashes, absentCoverPackIds, environment: { platform: process.platform, release: os.release(), arch: process.arch, cpu: os.cpus()[0]?.model, node: process.version }, requestedRuns: { warm: warmRuns, cold: coldRuns }, completeRunCounts: warmRuns >= 30 && coldRuns >= 20, captures: [], limitations: ['The actual 77-deck index declares 70 cover assets; seven DS9 decks retain their existing monogram fallback.', 'At the phone viewport the baseline workbench table is occluded by toolbar/detail layout; real keyboard activation measures row selections, and the pointer-access failure remains recorded.', 'Desktop viewport emulation is not real Android or iOS hardware coverage.', 'CDP task metrics available for Chromium only.', 'Clone/model invocation counts and retained component/listener counts require later structural instrumentation and parity evidence.'] };
 const nextPaint = page => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
 async function install(h, c) {
     return h.page.evaluate(async options => {
@@ -102,17 +103,24 @@ async function open(h, c) {
     }
     await h.page.waitForFunction(({ library, expected }) => document.querySelectorAll(library ? '.saga-loredeck-library-deck-card' : '.saga-loredeck-workbench-entry-row').length === expected, { library: c.library, expected: c.library ? c.deckCount : Math.min(500, c.entryCount) });
     await h.page.evaluate(() => document.fonts.ready);
-    await h.page.waitForFunction(() => [...document.images].filter(img => img.loading !== 'lazy' || img.getBoundingClientRect().top < innerHeight * 2).every(img => img.complete), null, { polling: 'raf', timeout: 30000 });
-    await nextPaint(h.page);
-    if (c.library) {
-        const visibleCovers = await h.page.locator('.saga-loredeck-library-deck-card img').evaluateAll(images => images.filter(img => { const r = img.getBoundingClientRect(); return r.top < innerHeight && r.bottom > 0; }).map(img => ({ src: img.currentSrc || img.src, decoded: img.complete && img.naturalWidth > 0 })));
-        assert.ok(visibleCovers.length > 0 && visibleCovers.every(img => img.decoded), 'Visible cover images must actually decode');
-        assert.ok(!h.journal.snapshot(start).some(r => r.type === 'Image' && /\/content\/loredecks\//.test(r.url) && r.status >= 400), 'Canonical cover responses must not be missing');
+    const ownerId = `${c.id}:open`;
+    let imageReadiness, dom, end;
+    try {
+        await h.page.evaluate(installSagaPerformanceImageReadiness, { ...SAGA_IMAGE_READINESS_POLICY, requireVisibleCover: c.library, ownerId });
+        // Includes visible same-source decode, the existing final two RAFs and
+        // a fresh asynchronous eligibility seal, without descendant geometry.
+        imageReadiness = await h.page.evaluate(() => window.__sagaPerformanceImageReadiness.waitForReady());
+        if (c.library) {
+            assert.ok(imageReadiness.visibleDeckCoverCount > 0 && imageReadiness.eligibleCount === imageReadiness.decodedCount, 'Visible cover images must actually decode');
+            assert.ok(!h.journal.snapshot(start).some(r => r.type === 'Image' && /\/content\/loredecks\//.test(r.url) && r.status >= 400), 'Canonical cover responses must not be missing');
+        }
+        dom = await snapshotObservations(h.page);
+        end = h.journal.mark();
+    } finally {
+        await h.page.evaluate(owner => { const handle = window.__sagaPerformanceImageReadiness; if (handle?.ownerId === owner) handle.dispose(); }, ownerId);
     }
-    const dom = await snapshotObservations(h.page);
-    const end = h.journal.mark();
     const readinessMs = dom.resourceWindow.endMs - dom.resourceWindow.startMs;
-    return { kind: 'open', readinessMs, firstUsefulContentMs, interactionMs: null, selectionCpuMs: null, ...(await settleObservationBytes(h, start, end, dom)) };
+    return { kind: 'open', readinessMs, firstUsefulContentMs, interactionMs: null, selectionCpuMs: null, imageReadiness, ...(await settleObservationBytes(h, start, end, dom)) };
 }
 async function selection(h, c) {
     const mobileLibrary = c.library && h.page.viewportSize().width < 600;
@@ -139,7 +147,7 @@ async function selection(h, c) {
     const interactionMs = await h.page.evaluate(() => window.__sagaClickPaint - window.__sagaClickStart);
     const dom = await snapshotObservations(h.page);
     const end = h.journal.mark();
-    return { kind: 'interaction', readinessMs: null, firstUsefulContentMs: null, interactionKind: mobileLibrary ? 'keyboard-open-mobile-detail' : keyboardSelection ? 'keyboard-selection' : 'click-selection', interactionMs, selectionCpuMs: before ? (after.TaskDuration - before.TaskDuration) * 1000 : null, beforeId, afterId, ...(await settleObservationBytes(h, start, end, dom)) };
+    return { kind: 'interaction', imageReadiness: null, readinessMs: null, firstUsefulContentMs: null, interactionKind: mobileLibrary ? 'keyboard-open-mobile-detail' : keyboardSelection ? 'keyboard-selection' : 'click-selection', interactionMs, selectionCpuMs: before ? (after.TaskDuration - before.TaskDuration) * 1000 : null, beforeId, afterId, ...(await settleObservationBytes(h, start, end, dom)) };
 }
 async function screenshot(h, name) {
     const file = `${name}.png`; await h.page.screenshot({ path: path.join(output, file), fullPage: true });
@@ -150,7 +158,7 @@ for (const profile of profiles) for (const cpuRate of cpuRates) for (const c of 
     console.log('Capturing', id);
     const h = await startSagaPerformanceHarness({ sourceRoot, fixtureRoot, browserName, ...profile, cpuRate, cacheMode });
     try {
-        const capture = { metadata: { fixture: { ...c, revision: fixtureHash, coverPool, coverHashes, absentCoverPackIds }, browser: { name: browserName, version: h.browserVersion }, viewport: profile.viewport, deviceScaleFactor: profile.deviceScaleFactor, cpuRate, cacheMode, cacheControl: h.cacheControl, theme: 'default', capabilities: h.capabilities, byteMeasurementMethod: 'CDP request-initiation window, settled after timed readiness', protocolHash, environment: index.environment, sourceRevision: index.sourceRevision, sourceHash, executablePath: h.executablePath }, samples: [], startupRequests: [], limitations: index.limitations };
+        const capture = { metadata: { fixture: { ...c, revision: fixtureHash, coverPool, coverHashes, absentCoverPackIds }, browser: { name: browserName, version: h.browserVersion }, viewport: profile.viewport, deviceScaleFactor: profile.deviceScaleFactor, cpuRate, cacheMode, cacheControl: h.cacheControl, theme: 'default', imageReadinessPolicy: SAGA_IMAGE_READINESS_POLICY, capabilities: h.capabilities, byteMeasurementMethod: 'CDP request-initiation window, settled after timed readiness', protocolHash, environment: index.environment, sourceRevision: index.sourceRevision, sourceHash, executablePath: h.executablePath }, samples: [], startupRequests: [], limitations: index.limitations };
         for (let run = 0; run < (cacheMode === 'cold' ? coldRuns : 1); run++) {
             console.log('Opening', id, run + 1);
             if (run) await h.resetPage();
@@ -182,7 +190,7 @@ for (const profile of profiles) for (const cpuRate of cpuRates) for (const c of 
 // Additional tablet visual references use the same real fixtures; timings remain desktop/phone only.
 if (!args.includes('--skip-tablet')) for (const c of cases) {
     const h = await startSagaPerformanceHarness({ sourceRoot, fixtureRoot, browserName, viewport: { width: 768, height: 1024 }, deviceScaleFactor: 1, cpuRate: 1, cacheMode: 'warm' });
-    try { await install(h, c); await open(h, c); index.captures.push({ id: `${c.id}-tablet-visual`, metadata: { fixture: { ...c, revision: fixtureHash, coverPool, coverHashes, absentCoverPackIds }, browser: { name: browserName, version: h.browserVersion }, viewport: { width: 768, height: 1024 }, deviceScaleFactor: 1, cpuRate: 1, cacheMode: 'warm', cacheControl: h.cacheControl, theme: 'default', sourceRevision, sourceHash, protocolHash, environment: index.environment }, screenshot: await screenshot(h, `${c.id}-tablet-visual`) }); }
+    try { await install(h, c); await open(h, c); index.captures.push({ id: `${c.id}-tablet-visual`, metadata: { fixture: { ...c, revision: fixtureHash, coverPool, coverHashes, absentCoverPackIds }, browser: { name: browserName, version: h.browserVersion }, viewport: { width: 768, height: 1024 }, deviceScaleFactor: 1, cpuRate: 1, cacheMode: 'warm', cacheControl: h.cacheControl, theme: 'default', imageReadinessPolicy: SAGA_IMAGE_READINESS_POLICY, sourceRevision, sourceHash, protocolHash, environment: index.environment }, screenshot: await screenshot(h, `${c.id}-tablet-visual`) }); }
     finally { await h.stop(); }
 }
 await fs.writeFile(path.join(output, 'index.json'), `${JSON.stringify(index, null, 2)}\n`);
