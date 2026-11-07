@@ -1,11 +1,19 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { createReadStream } from 'node:fs';
 import { access } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { startVisualSmokeServer } from '../serve-visual-smoke.mjs';
 import { assertCachePolicy } from './saga-performance-report.mjs';
 import { createSagaPerformanceRequestJournal } from './saga-performance-request-journal.mjs';
 
-export async function startSagaPerformanceHarness({ sourceRoot, fixtureRoot, browserName = 'chromium', viewport = { width: 1440, height: 900 }, deviceScaleFactor = 1, cpuRate = 1, cacheMode = 'cold', chromiumArgs } = {}) {
+async function hashBrowserExecutable(executablePath) {
+    const hash = createHash('sha256');
+    for await (const chunk of createReadStream(executablePath)) hash.update(chunk);
+    return hash.digest('hex');
+}
+
+export async function startSagaPerformanceHarness({ sourceRoot, fixtureRoot, browserName = 'chromium', viewport = { width: 1440, height: 900 }, deviceScaleFactor = 1, cpuRate = 1, cacheMode = 'cold', chromiumArgs, pinBrowserBinary = false } = {}) {
     assert.ok(['chromium', 'firefox', 'webkit'].includes(browserName), 'Unknown browser');
     assert.ok(cpuRate >= 1 && Number.isFinite(cpuRate), 'Invalid CPU rate');
     if (browserName !== 'chromium' && cpuRate !== 1) throw new Error('CDP CPU throttling is only available in Chromium');
@@ -26,7 +34,16 @@ export async function startSagaPerformanceHarness({ sourceRoot, fixtureRoot, bro
                 try { await access(candidate); executablePath = candidate; break; } catch { /* Try next. */ }
             }
         }
+        // Pass the hashed path explicitly because Playwright may otherwise launch a different headless executable.
+        if (pinBrowserBinary) executablePath ||= playwright[browserName].executablePath();
+        const binarySha256 = pinBrowserBinary ? await hashBrowserExecutable(executablePath) : null;
+        async function verifyBrowserBinary() {
+            assert.ok(binarySha256, 'Browser binary verification was not requested');
+            assert.equal(await hashBrowserExecutable(executablePath), binarySha256, `Browser executable changed during capture: ${executablePath}`);
+            return binarySha256;
+        }
         browser = await playwright[browserName].launch({ headless: true, executablePath, args: browserName === 'chromium' ? chromiumArgs : undefined });
+        if (pinBrowserBinary) await verifyBrowserBinary();
         async function resetPage() {
             if (context) await context.close();
             context = await browser.newContext({ viewport, deviceScaleFactor, isMobile: browserName !== 'firefox' && viewport.width < 600, hasTouch: viewport.width < 600 });
@@ -77,7 +94,7 @@ export async function startSagaPerformanceHarness({ sourceRoot, fixtureRoot, bro
         await resetPage();
         return {
             get page() { return page; }, get cdp() { return cdp; }, get capabilities() { return { ...capabilities }; }, browserVersion: browser.version(), browserName, executablePath: executablePath || playwright[browserName].executablePath(),
-            origin: server.origin, cacheControl: server.cacheControl, errors, journal, resetPage,
+            origin: server.origin, cacheControl: server.cacheControl, errors, journal, resetPage, verifyBrowserBinary,
             get requests() { return journal.snapshot(); },
             get network() { return journal.snapshot().filter(record => record.state === 'complete'); },
             async readTaskMetrics() { return cdp ? Object.fromEntries((await cdp.send('Performance.getMetrics')).metrics.map(m => [m.name, m.value])) : null; },

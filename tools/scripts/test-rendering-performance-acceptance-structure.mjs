@@ -43,4 +43,22 @@ assert.deepEqual(calls, pages.flatMap((_, pageNumber) => [
     [pageNumber, 'selector initialized'],
     [pageNumber, 'ready to measure'],
 ]), 'Initialize the selector helper on each fresh page before the collector can start timing');
+
+const browserStart = collector.indexOf('async function verifyCaptureBrowser(h)');
+const browserEnd = collector.indexOf('const nextPaint =', browserStart);
+assert.ok(browserStart >= 0 && browserEnd > browserStart, 'Pin one verified browser identity for the entire capture');
+const index = {};
+const verifyCaptureBrowser = new Function('assert', 'index', `${collector.slice(browserStart, browserEnd)}\nreturn verifyCaptureBrowser;`)(assert, index);
+const pinned = {
+    browserName: 'chromium', browserVersion: '156.0.4314.58', executablePath: '/engine/chromium',
+    verifyBrowserBinary: async () => 'a'.repeat(64),
+};
+const identity = await verifyCaptureBrowser(pinned);
+assert.deepEqual(identity, { name: 'chromium', version: '156.0.4314.58', executablePath: '/engine/chromium', binarySha256: 'a'.repeat(64) });
+assert.deepEqual(await verifyCaptureBrowser({ ...pinned }), identity);
+await assert.rejects(verifyCaptureBrowser({ ...pinned, browserVersion: '157.0.4341.42' }), /capture browser identity changed/i);
+await assert.rejects(verifyCaptureBrowser({ ...pinned, verifyBrowserBinary: async () => 'b'.repeat(64) }), /capture browser identity changed/i);
+await assert.rejects(verifyCaptureBrowser({ ...pinned, executablePath: '/other/chromium' }), /capture browser identity changed/i);
+await assert.rejects(verifyCaptureBrowser({ ...pinned, verifyBrowserBinary: async () => { throw new Error('Executable changed'); } }), /Executable changed/);
+assert.deepEqual(index.browser, identity, 'A mismatched launch must never replace the pinned identity');
 console.log('Acceptance API/structure/classifier checks passed; no bootstrap executed.');

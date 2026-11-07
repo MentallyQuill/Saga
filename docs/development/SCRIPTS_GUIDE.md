@@ -124,6 +124,12 @@ timed capture finishes. Evaluate two sealed real bundles with
 Inconclusive results are never a pass. Never run builds, broad validation or
 supplemental HTTP/body probes concurrently with timed acceptance capture.
 
+For a new timed capture, set `SAGA_CHROME_PATH` to the versioned browser
+executable and verify its expected SHA-256 before starting either build. The
+collector records the browser version, executable path and SHA-256 in the index
+and in each timed and tablet case. A changed version or executable aborts the
+capture. Match the exact archived protocol and fixture when replaying an old run.
+
 ### 3.1 Module System and Imports
 
 Use ES modules with `node:` prefix for built-in modules:

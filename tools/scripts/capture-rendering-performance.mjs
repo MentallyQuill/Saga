@@ -54,6 +54,12 @@ const profiles = [
 ].filter(p => !arg('profiles', '') || arg('profiles', '').split(',').includes(p.id));
 
 const index = { schemaVersion: 1, createdAt: new Date().toISOString(), sourceRoot, fixtureRoot, sourceRevision, sourceHash, protocolHash, imageReadinessPolicy: SAGA_IMAGE_READINESS_POLICY, fixtureHash, coverHashes, absentCoverPackIds, environment: { platform: process.platform, release: os.release(), arch: process.arch, cpu: os.cpus()[0]?.model, node: process.version }, requestedRuns: { warm: warmRuns, cold: coldRuns }, completeRunCounts: warmRuns >= 30 && coldRuns >= 20, captures: [], limitations: ['The actual 77-deck index declares 70 cover assets; seven DS9 decks retain their existing monogram fallback.', 'At the phone viewport the baseline workbench table is occluded by toolbar/detail layout; real keyboard activation measures row selections, and the pointer-access failure remains recorded.', 'Desktop viewport emulation is not real Android or iOS hardware coverage.', 'CDP task metrics available for Chromium only.', 'Clone/model invocation counts and retained component/listener counts require later structural instrumentation and parity evidence.'] };
+async function verifyCaptureBrowser(h) {
+    const browser = { name: h.browserName, version: h.browserVersion, executablePath: h.executablePath, binarySha256: await h.verifyBrowserBinary() };
+    index.browser ??= browser;
+    assert.deepEqual(browser, index.browser, 'Capture browser identity changed between cases');
+    return browser;
+}
 const nextPaint = page => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
 async function install(h, c) {
     const fixture = await h.page.evaluate(async options => {
@@ -159,9 +165,10 @@ async function screenshot(h, name) {
 for (const profile of profiles) for (const cpuRate of cpuRates) for (const c of cases) for (const cacheMode of ['cold', 'warm']) {
     const id = `${c.id}-${profile.id}-${cpuRate}x-${cacheMode}`;
     console.log('Capturing', id);
-    const h = await startSagaPerformanceHarness({ sourceRoot, fixtureRoot, browserName, ...profile, cpuRate, cacheMode });
+    const h = await startSagaPerformanceHarness({ sourceRoot, fixtureRoot, browserName, ...profile, cpuRate, cacheMode, pinBrowserBinary: true });
     try {
-        const capture = { metadata: { fixture: { ...c, revision: fixtureHash, coverPool, coverHashes, absentCoverPackIds }, browser: { name: browserName, version: h.browserVersion }, viewport: profile.viewport, deviceScaleFactor: profile.deviceScaleFactor, cpuRate, cacheMode, cacheControl: h.cacheControl, theme: 'default', imageReadinessPolicy: SAGA_IMAGE_READINESS_POLICY, capabilities: h.capabilities, byteMeasurementMethod: 'CDP request-initiation window, settled after timed readiness', protocolHash, environment: index.environment, sourceRevision: index.sourceRevision, sourceHash, executablePath: h.executablePath }, samples: [], startupRequests: [], limitations: index.limitations };
+        const browser = await verifyCaptureBrowser(h);
+        const capture = { metadata: { fixture: { ...c, revision: fixtureHash, coverPool, coverHashes, absentCoverPackIds }, browser, viewport: profile.viewport, deviceScaleFactor: profile.deviceScaleFactor, cpuRate, cacheMode, cacheControl: h.cacheControl, theme: 'default', imageReadinessPolicy: SAGA_IMAGE_READINESS_POLICY, capabilities: h.capabilities, byteMeasurementMethod: 'CDP request-initiation window, settled after timed readiness', protocolHash, environment: index.environment, sourceRevision: index.sourceRevision, sourceHash, executablePath: h.executablePath }, samples: [], startupRequests: [], limitations: index.limitations };
         for (let run = 0; run < (cacheMode === 'cold' ? coldRuns : 1); run++) {
             console.log('Opening', id, run + 1);
             if (run) await h.resetPage();
@@ -181,6 +188,7 @@ for (const profile of profiles) for (const cpuRate of cpuRates) for (const c of 
             capture.selectionSemantics = { displayRows: await h.page.locator('.saga-loredeck-workbench-entry-row').count(), selectedSummary: await h.page.locator('.saga-loredeck-workbench-bulk-summary').innerText(), limitMessage: await h.page.locator('.saga-lore-workbench-row-note').innerText() };
             assert.match(capture.selectionSemantics.selectedSummary, /600/);
         }
+        await verifyCaptureBrowser(h);
         capture.pageErrors = h.errors.slice(); assert.deepEqual(capture.pageErrors, []);
         capture.summary = Object.fromEntries(['readinessMs', 'firstUsefulContentMs', 'interactionMs', 'selectionCpuMs', 'transferBytes', 'imageBytes', 'longTaskMs'].map(field => [field, summarizeSamples(capture.samples, field)]));
         validateCapture(capture);
@@ -192,9 +200,15 @@ for (const profile of profiles) for (const cpuRate of cpuRates) for (const c of 
 }
 // Additional tablet visual references use the same real fixtures; timings remain desktop/phone only.
 if (!args.includes('--skip-tablet')) for (const c of cases) {
-    const h = await startSagaPerformanceHarness({ sourceRoot, fixtureRoot, browserName, viewport: { width: 768, height: 1024 }, deviceScaleFactor: 1, cpuRate: 1, cacheMode: 'warm' });
-    try { await install(h, c); await open(h, c); index.captures.push({ id: `${c.id}-tablet-visual`, metadata: { fixture: { ...c, revision: fixtureHash, coverPool, coverHashes, absentCoverPackIds }, browser: { name: browserName, version: h.browserVersion }, viewport: { width: 768, height: 1024 }, deviceScaleFactor: 1, cpuRate: 1, cacheMode: 'warm', cacheControl: h.cacheControl, theme: 'default', imageReadinessPolicy: SAGA_IMAGE_READINESS_POLICY, sourceRevision, sourceHash, protocolHash, environment: index.environment }, screenshot: await screenshot(h, `${c.id}-tablet-visual`) }); }
-    finally { await h.stop(); }
+    const h = await startSagaPerformanceHarness({ sourceRoot, fixtureRoot, browserName, viewport: { width: 768, height: 1024 }, deviceScaleFactor: 1, cpuRate: 1, cacheMode: 'warm', pinBrowserBinary: true });
+    try {
+        const browser = await verifyCaptureBrowser(h);
+        await install(h, c);
+        await open(h, c);
+        const image = await screenshot(h, `${c.id}-tablet-visual`);
+        await verifyCaptureBrowser(h);
+        index.captures.push({ id: `${c.id}-tablet-visual`, metadata: { fixture: { ...c, revision: fixtureHash, coverPool, coverHashes, absentCoverPackIds }, browser, viewport: { width: 768, height: 1024 }, deviceScaleFactor: 1, cpuRate: 1, cacheMode: 'warm', cacheControl: h.cacheControl, theme: 'default', imageReadinessPolicy: SAGA_IMAGE_READINESS_POLICY, sourceRevision, sourceHash, protocolHash, environment: index.environment }, screenshot: image });
+    } finally { await h.stop(); }
 }
 await fs.writeFile(path.join(output, 'index.json'), `${JSON.stringify(index, null, 2)}\n`);
 console.log(`Capture complete: ${index.captures.length} cases; full run counts: ${index.completeRunCounts}; ${output}`);
