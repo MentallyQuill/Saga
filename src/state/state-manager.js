@@ -498,6 +498,10 @@ async function awaitStatePersistence(result) {
     return { ...settled, ok: settled.ok === true && settled.persisted === true };
 }
 
+export function isUnverifiedLegacyStateSave(result) {
+    return result.status === 'unverified' && result.originBinding === 'legacy_host_request';
+}
+
 // ── State migration ─────────────────────────────────────────────────────────────
 
 /**
@@ -1262,22 +1266,7 @@ export function restoreStateFromBackup(backupId) {
 }
 
 export async function restoreStateFromBackupDurable(backupId) {
-    const operation = captureChatOperation({ requireEnabled: false });
-    try {
-        const current = getState();
-        const backup = normalizeStateSafety(current.stateSafety).backups.find(item => item.id === backupId);
-        if (!backup) return { ok: false, persisted: false, error: 'Backup not found.' };
-        const protectedCurrent = await createStateBackupDurable('before_backup_restore', { label: 'Before restoring a saved Saga backup.', operation });
-        if (!protectedCurrent.ok) return protectedCurrent;
-        operation.assertCurrent();
-        const next = migrateState(cloneJsonForStateSafety(backup.state, getDefaultState()));
-        next.stateSafety = normalizeStateSafety(current.stateSafety);
-        next.stateSafety.lastRestoreAt = Date.now();
-        next.stateSafety.lastRestoreSource = backup.id;
-        appendStateSafetyLog(next, { type: 'state_restore', message: `Restored Saga state backup ${backup.id}.`, toVersion: SCHEMA_VERSION });
-        return { ...await saveStateDurable(next, { operation }), backup };
-    } catch (error) { return { ok: false, persisted: false, error: error?.message || String(error) }; }
-    finally { operation.release(); }
+    return restoreStateWithBackup({ backupId });
 }
 
 export function restoreStateFromExport(json) {
@@ -1311,21 +1300,43 @@ export function restoreStateFromExport(json) {
 }
 
 export async function restoreStateFromExportDurable(json) {
-    const operation = captureChatOperation({ requireEnabled: false });
+    return restoreStateWithBackup({ json });
+}
+
+/** Restore after a protective save. Only an explicit opt-in accepts an unverified legacy request. */
+export async function restoreStateWithBackup(source, options = {}) {
+    const operation = options.operation || captureChatOperation({ requireEnabled: false });
+    const acceptsSave = result => result.ok || (options.allowUnverified === true && isUnverifiedLegacyStateSave(result));
     try {
-        const backup = await createStateBackupDurable('before_file_restore', { label: 'Before restoring Saga state from file.', operation });
-        if (!backup.ok) return backup;
         operation.assertCurrent();
-        const imported = importState(json);
-        if (!imported.state) return { ok: false, persisted: false, error: imported.error || 'State import failed.' };
-        const next = imported.state;
+        const fromBackup = 'backupId' in source;
+        const backup = fromBackup ? getStateSafety().backups.find(item => item.id === source.backupId) : null;
+        if (fromBackup && !backup) return { ok: false, persisted: false, error: 'Backup not found.' };
+
+        const reason = fromBackup ? 'before_backup_restore' : 'before_file_restore';
+        const label = fromBackup ? 'Before restoring a saved Saga backup.' : 'Before restoring Saga state from file.';
+        const protectedCurrent = await createStateBackupDurable(reason, { label, operation });
+        if (!acceptsSave(protectedCurrent)) return protectedCurrent;
+        operation.assertCurrent();
+
+        const replacement = fromBackup
+            ? { state: migrateState(cloneJsonForStateSafety(backup.state, getDefaultState())) }
+            : importState(source.json);
+        if (!replacement.state) return { ok: false, persisted: false, error: replacement.error || 'State import failed.' };
+        const next = replacement.state;
         next.stateSafety = normalizeStateSafety(getState().stateSafety);
         next.stateSafety.lastRestoreAt = Date.now();
-        next.stateSafety.lastRestoreSource = 'file';
-        appendStateSafetyLog(next, { type: 'state_restore', message: 'Restored Saga state from an exported JSON file.', toVersion: SCHEMA_VERSION });
-        return await saveStateDurable(next, { operation });
+        next.stateSafety.lastRestoreSource = backup?.id || 'file';
+        appendStateSafetyLog(next, {
+            type: 'state_restore',
+            message: fromBackup ? `Restored Saga state backup ${backup.id}.` : 'Restored Saga state from an exported JSON file.',
+            toVersion: SCHEMA_VERSION,
+        });
+        const result = await saveStateDurable(next, { operation });
+        result.ok = acceptsSave(result);
+        return fromBackup ? { ...result, backup } : result;
     } catch (error) { return { ok: false, persisted: false, error: error?.message || String(error) }; }
-    finally { operation.release(); }
+    finally { if (!options.operation) operation.release(); }
 }
 
 // ?? Utility: deep-merge defaults ????????????????????????????????????????????????

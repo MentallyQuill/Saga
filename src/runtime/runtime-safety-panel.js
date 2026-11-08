@@ -3,6 +3,7 @@ import { captureLoreTimelineState, recordLoreTimelineEvent } from '../lorecards/
 import { clearCanonLoreDatabaseCache } from '../context/canon-lore-db.js';
 import { clearContextIndexCache } from '../context/context-index.js';
 import { DEFAULT_SETTINGS, getDefaultState } from '../state/constants.js';
+import { captureChatOperation } from '../state/chat-operation.js';
 import { appendStateSafetyLog } from '../state/state-backup.js';
 import { clearStoredSecret } from '../state/secure-keyring.js';
 import { pruneUnavailableLoredeckStackItems } from './active-stack-panel.js';
@@ -15,8 +16,8 @@ import {
     getSagaStorageDiagnostics,
     getState,
     getStateSafety,
-    restoreStateFromBackupDurable,
-    restoreStateFromExportDurable,
+    isUnverifiedLegacyStateSave,
+    restoreStateWithBackup,
     saveSettings,
     saveState,
     settleSagaStorageWrites,
@@ -218,27 +219,47 @@ function downloadSagaStateExport() {
     toast('Saga state exported.', 'success');
 }
 
+function toastStateSafetySave(message, persisted) {
+    if (persisted) toast(message, 'success');
+    else toast(`${message} SillyTavern could not verify the save. Use Export State to keep a separate copy.`, 'warning');
+}
+
+async function restoreSagaState({ file, backup }, operation) {
+    try {
+        operation.assertCurrent();
+        const title = file ? 'Restore Saga state from file?' : 'Restore latest Saga backup?';
+        const message = file
+            ? 'Replace the current Saga chat state with the selected exported state JSON?'
+            : `Restore backup ${backup.label || backup.reason || backup.id} from ${formatStateSafetyTimestamp(backup.createdAt)}?`;
+        const proceed = await confirmAction(title,
+            `${message} Saga will back up the current state first. If SillyTavern can't verify the save, Saga will still apply the restore to this chat. Use Export State first if you need a separate recovery copy.`);
+        if (!proceed) return;
+        operation.assertCurrent();
+
+        const source = file ? { json: await file.text() } : { backupId: backup.id };
+        const result = await restoreStateWithBackup(source, { operation, allowUnverified: true });
+        if (!result.ok) throw new Error(result.error || 'State restore failed.');
+        operation.assertCurrent();
+        refreshPanelBody({ preserveScroll: false });
+        refreshHeader();
+        toastStateSafetySave(file ? 'Saga state restored from file.' : 'Latest Saga state backup restored.', result.persisted);
+    } catch (error) {
+        toast(error?.message || 'Saga state restore failed.', 'error');
+    } finally {
+        operation.release();
+    }
+}
+
 function restoreSagaStateFromFile() {
+    const operation = captureChatOperation({ lane: 'state-safety-restore', requireEnabled: false });
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = 'application/json,.json';
-    input.addEventListener('change', async () => {
+    input.addEventListener('cancel', () => operation.release(), { once: true });
+    input.addEventListener('change', () => {
         const file = input.files?.[0];
-        if (!file) return;
-        const proceed = await confirmAction(
-            'Restore Saga state from file?',
-            'Saga will back up the current chat state before replacing it with the selected exported state JSON. Continue?'
-        );
-        if (!proceed) return;
-        try {
-            const result = await restoreStateFromExportDurable(await file.text());
-            if (!result.ok) throw new Error(result.error || 'State restore failed.');
-            refreshPanelBody({ preserveScroll: false });
-            refreshHeader();
-            toast('Saga state restored from file.', 'success');
-        } catch (e) {
-            toast(e?.message || 'Saga state restore failed.', 'error');
-        }
+        if (file) void restoreSagaState({ file }, operation);
+        else operation.release();
     }, { once: true });
     input.click();
 }
@@ -482,9 +503,12 @@ export function createStateSafetyCard(state = getState()) {
     actions.className = 'saga-primary-actions';
     actions.appendChild(createButton('Backup Now', 'Create a Saga state backup in this chat before testing risky alpha workflows.', async () => {
         const result = await createStateBackupDurable('manual');
-        if (!result.ok) { toast(result.error || 'Saga state backup failed.', 'error'); return; }
+        if (!result.ok && !isUnverifiedLegacyStateSave(result)) {
+            toast(result.error || 'Saga state backup failed.', 'error');
+            return;
+        }
         refreshPanelBody({ preserveScroll: true, preserveWindowScroll: true });
-        toast('Saga state backup created.', 'success');
+        toastStateSafetySave('Saga state backup created in this chat.', result.persisted);
     }, 'saga-primary-button'));
     actions.appendChild(createButton('Export State', 'Download the current Saga chat state as restoreable JSON.', () => {
         downloadSagaStateExport();
@@ -504,21 +528,10 @@ export function createStateSafetyCard(state = getState()) {
         cleanMissingStorageRecordsFromButton(button);
     }));
     const latest = safety.backups[0] || null;
-    const restoreLatest = createButton('Restore Latest Backup', 'Restore the newest in-chat Saga state backup. A new backup is created before restoring.', async () => {
+    const restoreLatest = createButton('Restore Latest Backup', 'Restore the newest in-chat Saga state backup. A new backup is created before restoring.', () => {
         if (!latest) return;
-        const proceed = await confirmAction(
-            'Restore latest Saga backup?',
-            `Restore backup ${latest.label || latest.reason || latest.id} from ${formatStateSafetyTimestamp(latest.createdAt)}? Saga will back up the current state first.`
-        );
-        if (!proceed) return;
-        const result = await restoreStateFromBackupDurable(latest.id);
-        if (!result.ok) {
-            toast(result.error || 'Saga state restore failed.', 'error');
-            return;
-        }
-        refreshPanelBody({ preserveScroll: false });
-        refreshHeader();
-        toast('Latest Saga state backup restored.', 'success');
+        const operation = captureChatOperation({ lane: 'state-safety-restore', requireEnabled: false });
+        void restoreSagaState({ backup: latest }, operation);
     }, 'saga-danger-button');
     restoreLatest.disabled = !latest;
     actions.appendChild(restoreLatest);

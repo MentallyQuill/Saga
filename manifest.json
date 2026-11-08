@@ -1,6 +1,6 @@
 {
     "display_name": "Saga",
-    "version": "0.5.0-beta.1",
+    "version": "0.5.0-beta.2",
     "author": "MentallyQuill",
     "key": "saga",
     "js": "src/extension/index.js",

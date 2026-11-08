@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { createStateSafetyCard } from '../../src/runtime/runtime-safety-panel.js';
+import { MODULE_KEY, getDefaultState } from '../../src/state/constants.js';
+import { exportSagaState, getState, getStateSafety, restoreStateFromExportDurable } from '../../src/state/state-manager.js';
 import {
   confirmAction,
   promptTextAction,
@@ -151,7 +154,9 @@ class FakeDocument extends FakeElement {
   }
 
   createElement(tagName) {
-    return new FakeElement(tagName);
+    const element = new FakeElement(tagName);
+    if (tagName === 'input') this.lastInput = element;
+    return element;
   }
 
   createDocumentFragment() {
@@ -247,4 +252,115 @@ globalThis.requestAnimationFrame = callback => setTimeout(callback, 0);
   assert.equal(document.querySelector('.saga-confirm-overlay'), null);
 }
 
-console.log('Runtime UI confirm dialog tests passed.');
+// Exercise the real State Safety buttons against a host whose save resolves to void.
+const toasts = [];
+globalThis.toastr = Object.fromEntries(['success', 'warning', 'error'].map(tone => [tone, message => toasts.push({ tone, message })]));
+let chat;
+globalThis.SillyTavern = { getContext: () => chat };
+const writes = [];
+function openChat(location) {
+  const state = getDefaultState();
+  state.scene.location = location;
+  chat = {
+    chatId: location,
+    chatMetadata: { [MODULE_KEY]: state },
+    extensionSettings: {},
+    async saveMetadata() { writes.push(structuredClone(this.chatMetadata[MODULE_KEY])); },
+  };
+}
+
+async function clickStateSafetyButton(label) {
+  const card = createStateSafetyCard();
+  const button = card.querySelectorAll('button').find(candidate => candidate.textContent === label);
+  assert.ok(button && !button.disabled, `Expected enabled ${label} button`);
+  await button.click();
+}
+
+async function answerRestore(confirm) {
+  const dialog = document.querySelector('.saga-confirm-overlay');
+  assert.ok(dialog);
+  assert.match(dialog.textContent, /can't verify.*Export State/i);
+  await dialog.querySelectorAll('button')[confirm ? 1 : 0].click();
+  await new Promise(resolve => setImmediate(resolve));
+}
+
+const exported = exportSagaState(getDefaultState());
+async function selectRestoreFile(text = async () => exported) {
+  await clickStateSafetyButton('Restore From File');
+  const input = document.lastInput;
+  input.files = [{ text }];
+  void input.listeners.change[0]();
+}
+
+openChat('backup original');
+await clickStateSafetyButton('Backup Now');
+await new Promise(resolve => setImmediate(resolve));
+assert.equal(getStateSafety().backups[0].reason, 'manual');
+assert.equal(toasts.at(-1)?.tone, 'warning', 'An unverified manual backup must be reported as a warning');
+
+getState().scene.location = 'newer state';
+await clickStateSafetyButton('Restore Latest Backup');
+await answerRestore(true);
+assert.equal(getState().scene.location, 'backup original');
+assert.equal(getStateSafety().backups[0].state.scene.location, 'newer state');
+assert.equal(toasts.at(-1)?.tone, 'warning');
+
+openChat('file original');
+const initialWriteCount = writes.length;
+await selectRestoreFile(() => { throw new Error('Cancelled restore should not read the file'); });
+await answerRestore(false);
+assert.equal(writes.length, initialWriteCount);
+
+await selectRestoreFile();
+await answerRestore(true);
+assert.equal(writes.length, initialWriteCount + 2);
+assert.equal(writes.at(-2).scene.location, 'file original');
+assert.equal(getState().scene.location, getDefaultState().scene.location);
+assert.equal(getStateSafety().backups[0].state.scene.location, 'file original');
+assert.equal(toasts.at(-1)?.tone, 'warning');
+
+openChat('strict restore');
+const strictResult = await restoreStateFromExportDurable(exported);
+assert.equal(strictResult.ok, false);
+assert.equal(strictResult.status, 'unverified');
+assert.equal(getState().scene.location, 'strict restore');
+
+openChat('backup refused');
+chat.saveMetadata = async () => ({ ok: false, error: 'disk full' });
+await selectRestoreFile();
+await answerRestore(true);
+assert.equal(getState().scene.location, 'backup refused');
+assert.deepEqual(toasts.at(-1), { tone: 'error', message: 'disk full' });
+
+openChat('replacement refused');
+let saveAttempts = 0;
+chat.saveMetadata = async () => {
+  if (++saveAttempts === 2) throw new Error('replacement rejected');
+};
+await selectRestoreFile();
+await answerRestore(true);
+assert.equal(saveAttempts, 2);
+assert.equal(getStateSafety().backups[0].state.scene.location, 'replacement refused');
+assert.deepEqual(toasts.at(-1), { tone: 'error', message: 'replacement rejected' });
+
+openChat('bound save');
+chat.sagaPersistence = { originBound: true, saveState: () => ({ ok: true, persisted: false }) };
+await selectRestoreFile();
+await answerRestore(true);
+assert.equal(getState().scene.location, 'bound save');
+assert.equal(toasts.at(-1)?.tone, 'error');
+
+chat.sagaPersistence.saveState = () => ({ ok: true, persisted: true });
+await selectRestoreFile();
+await answerRestore(true);
+assert.equal(getState().scene.location, getDefaultState().scene.location);
+assert.equal(toasts.at(-1)?.tone, 'success');
+
+openChat('file read origin');
+const writesBeforeSwitch = writes.length;
+await selectRestoreFile(async () => { openChat('other chat'); return exported; });
+await answerRestore(true);
+assert.equal(getState().scene.location, 'other chat');
+assert.equal(writes.length, writesBeforeSwitch);
+
+console.log('Runtime UI confirm dialog and State Safety tests passed.');

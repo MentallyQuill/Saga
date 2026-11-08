@@ -41,9 +41,9 @@ The HP reference-deck conformance check now exists at `tools/scripts/test-hp-ref
 
 ## Release Metadata And Gate
 
-Current release metadata is `0.5.0-beta.1` (**Svelte**) with `minimum_client_version` set and `auto_update: false`. Testers update manually from the repository. The manifest also declares SillyTavern lifecycle hooks for install, update, delete, clean, enable, disable, and activate so Saga can create current-chat safety records, clear prompt injection, and clean direct provider key material when those extension actions run.
+Current release metadata is `0.5.0-beta.2` (**Svelte**) with `minimum_client_version` set and `auto_update: false`. Testers update manually from the repository. The manifest also declares SillyTavern lifecycle hooks for install, update, delete, clean, enable, disable, and activate so Saga can create current-chat safety records, clear prompt injection, and clean direct provider key material when those extension actions run.
 
-Before tagging a prerelease, run the existing release gate.
+Before tagging a prerelease, run the existing release gate. Follow-up prerelease builds can reuse the first build's release notes for the same series.
 
 ```powershell
 node tools/scripts/run-alpha-gate.mjs

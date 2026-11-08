@@ -58,6 +58,8 @@ Separate browsers, devices, or other clients can still update the same files at 
 
 Open **Settings**, switch to **Advanced**, then open **State Safety**.
 
+**Backup Now** takes an in-chat snapshot. **Restore Latest Backup** and **Restore From File** both back up the current Saga state before replacing it. On standard SillyTavern, Saga can request the save but cannot confirm it reached disk. If you confirm a restore, Saga applies it to the open chat and warns you when persistence is unverified. Use **Export State** before restoring if you need a separate recovery copy.
+
 State Safety has storage maintenance controls:
 
 - **Verify Storage** reads Saga's master storage index and checks whether tracked files still exist and parse as expected.
